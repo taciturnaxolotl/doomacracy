@@ -152,21 +152,33 @@ use ieee.numeric_std.all;
 use std.textio.all;
 use ieee.std_logic_textio.all;
 
--- 4 MB x 8 NOR flash, read only, 70 ns, loaded from a hex file (one byte a line)
+-- 4 MB x 8 NOR flash, loaded from a hex file (one byte a line). Knows the
+-- AMD byte-mode commands the boot ROM uses: reset, byte program and chip
+-- erase. While an operation runs, DQ7 reads inverted (0 for an erase) and
+-- DQ6 toggles on every read.
 entity flash_model is
-    generic (IMAGE : string := "build/flash.hex");
+    generic (
+        IMAGE      : string := "build/flash.hex";
+        PROG_TIME  : time   := 2 us;     -- real chip: about 9 us
+        ERASE_TIME : time   := 50 us     -- real chip: tens of seconds
+    );
     port (
         a     : in  std_logic_vector(21 downto 0);
         dq    : inout std_logic_vector(7 downto 0);
         oe_n  : in  std_logic;
-        we_n  : in  std_logic
+        we_n  : in  std_logic;
+        ce_n  : in  std_logic
     );
 end flash_model;
 
 architecture sim of flash_model is
     type mem_t is array (0 to 4194303) of integer range 0 to 255;
     shared variable mem : mem_t := (others => 255);
-    signal loaded : boolean := false;
+    signal loaded   : boolean := false;
+    signal busy     : boolean := false;
+    signal toggle   : std_logic := '0';
+    signal dq7_busy : std_logic := '0';   -- what DQ7 reads during the operation
+    signal rd_event : boolean := false;
 begin
     process
         file f : text;
@@ -185,16 +197,73 @@ begin
             end loop;
             report "flash: loaded " & integer'image(i) & " bytes from " & IMAGE;
         else
-            report "flash: no image " & IMAGE & ", reads as FF" severity warning;
+            report "flash: no image " & IMAGE & ", starts erased";
         end if;
         loaded <= true;
         wait;
     end process;
 
-    process (a, oe_n, loaded)
+    -- command interpreter, on the rising edge of WE
+    process
+        variable cyc   : integer := 0;
+        variable mode  : integer := 0;  -- 0 read, 1 program next, 2 erase setup
+        variable ad, v : integer;
+        variable nprog : integer := 0;
     begin
-        if oe_n = '0' then
-            dq <= (others => 'X'), std_logic_vector(to_unsigned(mem(to_integer(unsigned(a))), 8)) after 70 ns;
+        wait until rising_edge(we_n) and ce_n = '0';
+        assert oe_n = '1' report "flash: write with OE low" severity error;
+        assert not busy report "flash: write while busy" severity error;
+        ad := to_integer(unsigned(a));
+        v  := to_integer(unsigned(dq));
+        if mode = 1 then
+            mem(ad) := to_integer(to_unsigned(mem(ad), 8) and to_unsigned(v, 8));
+            nprog := nprog + 1;
+            mode := 0; cyc := 0;
+            dq7_busy <= not dq(7);
+            busy <= true; wait for PROG_TIME; busy <= false;
+        elsif v = 16#F0# then
+            mode := 0; cyc := 0;
+        elsif cyc = 0 and ad = 16#AAA# and v = 16#AA# then cyc := 1;
+        elsif cyc = 1 and ad = 16#555# and v = 16#55# then cyc := 2;
+        elsif cyc = 2 and ad = 16#AAA# and v = 16#A0# then mode := 1; cyc := 0;
+        elsif cyc = 2 and ad = 16#AAA# and v = 16#80# then mode := 2; cyc := 0;
+        elsif cyc = 2 and ad = 16#AAA# and v = 16#10# and mode = 2 then
+            report "flash: chip erase";
+            for i in mem'range loop mem(i) := 255; end loop;
+            mode := 0; cyc := 0;
+            dq7_busy <= '0';
+            busy <= true; wait for ERASE_TIME; busy <= false;
+        else
+            report "flash: unexpected write " & integer'image(v) & " to " & integer'image(ad) severity error;
+            cyc := 0;
+        end if;
+    end process;
+
+    -- each read (OE falling, or address change with OE low) while busy
+    -- flips DQ6
+    process (a, oe_n)
+    begin
+        if busy and oe_n = '0' and (oe_n'event or a'event) then
+            toggle <= not toggle;
+        end if;
+    end process;
+
+    process (a, oe_n, we_n, ce_n, loaded, busy, toggle, dq7_busy)
+        variable v : std_logic_vector(7 downto 0);
+    begin
+        if oe_n = '0' and we_n = '1' and ce_n = '0' then
+            -- a new read cycle is undefined until tACC; status changing in
+            -- the middle of one just changes the output
+            if busy then
+                v := dq7_busy & toggle & "000000";
+            else
+                v := std_logic_vector(to_unsigned(mem(to_integer(unsigned(a))), 8));
+            end if;
+            if a'event or oe_n'event then
+                dq <= (others => 'X'), v after 70 ns;
+            else
+                dq <= v;
+            end if;
         else
             dq <= (others => 'Z');
         end if;

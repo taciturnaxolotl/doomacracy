@@ -26,6 +26,11 @@
 #define FB_BASE     IO_REG(0x30)
 #define FRAME_COUNT IO_REG(0x34)
 #define PALETTE     IO_REG(0x38)
+#define JTAG_DATA   IO_REG(0x40)   /* read pops the next word from the JTAG loader */
+#define JTAG_STATUS IO_REG(0x44)   /* bit 0 word waiting, bit 1 overflow (sticky) */
+
+#define SW_JTAG_LOAD  (1u << 9)    /* SW9 up at reset: load flash over JTAG */
+#define JTAG_MAGIC    0x4A544147u  /* "JTAG": first word of a load stream */
 
 #define UART_TX_READY 1u
 #define KBD_VALID     0x100u

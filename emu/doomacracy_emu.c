@@ -38,6 +38,7 @@
 #define FB_H 200
 
 static uint8_t *rom, *sram, *sdram, *flash;
+static void die(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 static uint32_t x[32];
 static uint32_t pc;
 static uint64_t instret;
@@ -57,12 +58,48 @@ static uint64_t flips;
 typedef struct { uint64_t when; int flip; uint8_t byte; } kev_t;
 static kev_t *kq; static size_t kq_n, kq_cap, kq_head;
 static uint8_t kfifo[16]; static int kf_head, kf_n;
+
+/* JTAG loader feed: a stream file standing in for the USB-Blaster */
+static uint8_t *jtag_buf; static size_t jtag_len, jtag_pos;
+
+/* AMD-style flash command interpreter (byte mode, as on the DE1). Erase and
+   program finish instantly, so status polling sees them done at once. */
+static int fl_cycle;            /* position in the unlock sequence */
+static int fl_mode;             /* 0 read, 1 program next write, 2 erase setup */
+static uint64_t fl_programs, fl_erases;
+static void flash_write(uint32_t off, uint8_t v)
+{
+    if (fl_mode == 1) {                                          /* program */
+        flash[off] &= v;
+        fl_programs++;
+        fl_mode = 0; fl_cycle = 0;
+        return;
+    }
+    if (v == 0xF0) { fl_cycle = 0; fl_mode = 0; return; }        /* reset */
+    switch (fl_cycle) {
+    case 0: if (off == 0xAAA && v == 0xAA) { fl_cycle = 1; return; } break;
+    case 1: if (off == 0x555 && v == 0x55) { fl_cycle = 2; return; } break;
+    case 2:
+        if (off == 0xAAA && v == 0xA0) { fl_mode = 1; fl_cycle = 0; return; }
+        if (off == 0xAAA && v == 0x80) { fl_mode = 2; fl_cycle = 0; return; }
+        if (off == 0xAAA && v == 0x90) { fl_cycle = 0; return; }  /* autoselect: ignored */
+        if (off == 0xAAA && v == 0x10 && fl_mode == 2) {          /* chip erase */
+            memset(flash, 0xff, FLASH_SIZE);
+            fl_erases++;
+            fl_mode = 0; fl_cycle = 0;
+            return;
+        }
+        break;
+    }
+    die("flash: unexpected write %02x to %06x (command cycle %d)", v, off, fl_cycle);
+}
 static uint64_t kbd_dropped;
 static uint64_t last_arrival;
 
 /* options */
 static const char *boot_path = "build/boot.bin";
 static const char *flash_path = "build/flash.bin";
+static const char *jtag_path, *flash_out;
 static const char *dump_dir;
 static const char *dump_prefix = "frame";
 static uint32_t min_sp = 0xffffffff;
@@ -363,6 +400,12 @@ static uint32_t io_read(uint32_t off)
     case 0x14: return (switches & 0x3ff) | (0xfu << 16);
     case 0x30: return fb_base;
     case 0x34: return (uint32_t)frame_count();
+    case 0x40: {
+        uint32_t w = 0;
+        if (jtag_pos + 4 <= jtag_len) { memcpy(&w, jtag_buf + jtag_pos, 4); jtag_pos += 4; }
+        return w;
+    }
+    case 0x44: return jtag_pos + 4 <= jtag_len;
     }
     die("read from undefined/write-only I/O register offset 0x%02x", off);
 }
@@ -410,7 +453,10 @@ static inline uint8_t *mem_ptr(uint32_t a, int size, int write, int *region)
     case 0x3:
         *region = R_FLASH;
         if (off + size > FLASH_SIZE) break;
-        if (write) die("store to flash address %08x", a);
+        if (write) {
+            if (size != 1) die("%d-byte store to flash address %08x (bytes only)", size, a);
+            return NULL;
+        }
         return flash + off;
     case 0xF:
         *region = R_IO;
@@ -445,6 +491,10 @@ static inline void store(uint32_t a, int size, uint32_t v)
     p = mem_ptr(a, size, 1, &region);
     nstore[region]++;
     if (timing) t_store(a);
+    if (!p && region == R_FLASH) {
+        flash_write(a & 0x0fffffff, v & 0xff);
+        return;
+    }
     if (!p) {
         if (size != 4) die("%d-byte store to I/O address %08x (word only)", size, a);
         if ((a & 0x0fffffff) > 0xff) die("store to unmapped I/O address %08x", a);
@@ -711,7 +761,10 @@ static void usage(void)
 "  --max-instr N      stop after N instructions\n"
 "  --trace FILE       write retirement trace of the first --trace-count instrs\n"
 "  --trace-count K    default 1000000\n"
-"  --switches N       value of SW[9:0]\n"
+"  --switches N       value of SW[9:0] (0x200 = SW9, JTAG flash loader)\n"
+"  --jtag FILE        JTAG loader stream (tools/jtag_stream.py) for SW9 mode\n"
+"  --flash none       start with an erased flash\n"
+"  --flash-out FILE   write the flash contents here on exit\n"
 "  --log-flips        print instret and VGA frame number on every page flip\n"
 "  --quiet            fewer messages\n");
     exit(1);
@@ -744,6 +797,8 @@ int main(int argc, char **argv)
         else if (!strcmp(o, "--trace")) trace_path = ARG;
         else if (!strcmp(o, "--trace-count")) trace_count = strtoull(ARG, NULL, 0);
         else if (!strcmp(o, "--switches")) switches = strtoul(ARG, NULL, 0);
+        else if (!strcmp(o, "--jtag")) jtag_path = ARG;
+        else if (!strcmp(o, "--flash-out")) flash_out = ARG;
         else if (!strcmp(o, "--quiet")) quiet = 1;
         else if (!strcmp(o, "--log-flips")) log_flips = 1;
         else usage();
@@ -758,7 +813,15 @@ int main(int argc, char **argv)
     memset(flash, 0xff, FLASH_SIZE);
     if (timing) timing_init();
     load_file(boot_path, rom, ROM_SIZE, "boot ROM");
-    load_file(flash_path, flash, FLASH_SIZE, "flash image");
+    if (strcmp(flash_path, "none")) load_file(flash_path, flash, FLASH_SIZE, "flash image");
+    if (jtag_path) {
+        FILE *f = fopen(jtag_path, "rb");
+        if (!f) { fprintf(stderr, "emu: cannot read %s\n", jtag_path); exit(1); }
+        fseek(f, 0, SEEK_END); jtag_len = ftell(f); fseek(f, 0, SEEK_SET);
+        jtag_buf = malloc(jtag_len);
+        if (fread(jtag_buf, 1, jtag_len, f) != jtag_len) { fprintf(stderr, "emu: short read %s\n", jtag_path); exit(1); }
+        fclose(f);
+    }
     if (dump_dir) mkdir(dump_dir, 0777);
     if (trace_path) {
         trace_f = fopen(trace_path, "w");
@@ -769,6 +832,14 @@ int main(int argc, char **argv)
     pc = 0;
     rc = run();
     if (trace_f) fclose(trace_f);
+    if (flash_out) {
+        FILE *f = fopen(flash_out, "wb");
+        if (!f || fwrite(flash, 1, FLASH_SIZE, f) != FLASH_SIZE) { fprintf(stderr, "emu: cannot write %s\n", flash_out); exit(1); }
+        fclose(f);
+    }
+    if (fl_erases || fl_programs)
+        fprintf(stderr, "flash: %llu chip erases, %llu bytes programmed\n",
+                (unsigned long long)fl_erases, (unsigned long long)fl_programs);
     stats();
     return rc;
 }

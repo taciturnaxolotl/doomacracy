@@ -34,6 +34,8 @@ set_global_assignment -name VHDL_FILE ../rtl/io.vhd
 set_global_assignment -name VHDL_FILE ../rtl/video.vhd
 set_global_assignment -name VHDL_FILE ../rtl/uart.vhd
 set_global_assignment -name VHDL_FILE ../rtl/ps2_rx.vhd
+set_global_assignment -name VHDL_FILE ../rtl/vjtag_port.vhd
+set_global_assignment -name VHDL_FILE ../rtl/jtag_rx.vhd
 set_global_assignment -name VHDL_FILE ../rtl/doomacracy.vhd
 set_location_assignment PIN_L22 -to SW[0]
 set_location_assignment PIN_L21 -to SW[1]
@@ -185,6 +187,8 @@ set_location_assignment PIN_AA19 -to FL_DQ[7]
 set_location_assignment PIN_AA15 -to FL_OE_N
 set_location_assignment PIN_W14 -to FL_RST_N
 set_location_assignment PIN_Y14 -to FL_WE_N
+# FL_CE_N is missing from tetricide's pin list; PIN_AB15 per Terasic's DE1_Default.qsf
+set_location_assignment PIN_AB15 -to FL_CE_N
 set_location_assignment PIN_AA3 -to SRAM_ADDR[0]
 set_location_assignment PIN_AB3 -to SRAM_ADDR[1]
 set_location_assignment PIN_AA4 -to SRAM_ADDR[2]

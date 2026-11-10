@@ -20,6 +20,7 @@ entity tb_soc is
         DUMP_EVERY : integer := 1;          -- write every Nth VGA frame
         DUMP_FIRST : integer := 0;          -- skip frames before this one
         UART_DIV   : integer := 16;
+        SWITCHES   : integer := 0;          -- SW9 (512) selects the JTAG loader
         TRACE      : string  := "";
         TRACE_MAX  : integer := 0
     );
@@ -30,7 +31,7 @@ architecture sim of tb_soc is
     signal done : boolean := false;
 
     signal KEY  : std_logic_vector(3 downto 0) := "1111";
-    signal SW   : std_logic_vector(9 downto 0) := (others => '0');
+    signal SW   : std_logic_vector(9 downto 0) := std_logic_vector(to_unsigned(SWITCHES, 10));
     signal LEDR : std_logic_vector(9 downto 0);
     signal LEDG : std_logic_vector(7 downto 0);
     signal HEX0, HEX1, HEX2, HEX3 : std_logic_vector(6 downto 0);
@@ -47,7 +48,7 @@ architecture sim of tb_soc is
     signal DRAM_LDQM, DRAM_UDQM, DRAM_RAS_N, DRAM_CAS_N, DRAM_WE_N, DRAM_CS_N, DRAM_CKE, DRAM_CLK : std_logic;
     signal FL_ADDR : std_logic_vector(21 downto 0);
     signal FL_DQ : std_logic_vector(7 downto 0);
-    signal FL_OE_N, FL_WE_N, FL_RST_N : std_logic;
+    signal FL_OE_N, FL_WE_N, FL_RST_N, FL_CE_N : std_logic;
 
     signal frame_no : integer := 0;
     signal dram_ba, dram_dqm : std_logic_vector(1 downto 0);
@@ -67,7 +68,7 @@ begin
             DRAM_LDQM => DRAM_LDQM, DRAM_UDQM => DRAM_UDQM, DRAM_RAS_N => DRAM_RAS_N,
             DRAM_CAS_N => DRAM_CAS_N, DRAM_WE_N => DRAM_WE_N, DRAM_CS_N => DRAM_CS_N,
             DRAM_CKE => DRAM_CKE, DRAM_CLK => DRAM_CLK,
-            FL_ADDR => FL_ADDR, FL_DQ => FL_DQ, FL_OE_N => FL_OE_N, FL_WE_N => FL_WE_N, FL_RST_N => FL_RST_N);
+            FL_ADDR => FL_ADDR, FL_DQ => FL_DQ, FL_OE_N => FL_OE_N, FL_WE_N => FL_WE_N, FL_RST_N => FL_RST_N, FL_CE_N => FL_CE_N);
 
     sram_chip : entity work.sram_model
         port map (SRAM_ADDR, SRAM_DQ, SRAM_WE_N, SRAM_OE_N, SRAM_UB_N, SRAM_LB_N, SRAM_CE_N);
@@ -81,7 +82,7 @@ begin
 
     flash_chip : entity work.flash_model
         generic map (FLASH)
-        port map (FL_ADDR, FL_DQ, FL_OE_N, FL_WE_N);
+        port map (FL_ADDR, FL_DQ, FL_OE_N, FL_WE_N, FL_CE_N);
 
     -- UART receiver
     process

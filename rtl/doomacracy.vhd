@@ -52,7 +52,8 @@ entity doomacracy is
         FL_DQ      : inout std_logic_vector(7 downto 0);
         FL_OE_N    : out   std_logic;
         FL_WE_N    : out   std_logic;
-        FL_RST_N   : out   std_logic
+        FL_RST_N   : out   std_logic;
+        FL_CE_N    : out   std_logic
     );
 end doomacracy;
 
@@ -102,6 +103,8 @@ architecture rtl of doomacracy is
     signal hex : std_logic_vector(15 downto 0);
     signal dram_ba : std_logic_vector(1 downto 0);
     signal ledr_io : std_logic_vector(9 downto 0);
+    signal jt_avail, jt_ovf, jt_pop : std_logic;
+    signal jt_data : std_logic_vector(31 downto 0);
 
     function seg7(d : std_logic_vector(3 downto 0)) return std_logic_vector is
     begin
@@ -189,13 +192,17 @@ begin
     DRAM_BA_1 <= dram_ba(1);
 
     flash : entity work.flash_ctrl
-        port map (clk, reset, flash_req, s_addr, s_burst, flash_ack, flash_rdata,
+        port map (clk, reset, flash_req, s_addr, s_we, s_wdata, s_burst, flash_ack, flash_rdata,
                   FL_ADDR, FL_DQ, FL_OE_N, FL_WE_N, FL_RST_N);
 
     regs : entity work.io
         port map (clk, reset, io_req, s_addr, s_we, s_wdata, io_ack, io_rdata,
                   tx_start, tx_data, tx_ready, rx_valid, rx_data, kbd_valid, kbd_data,
-                  SW, KEY, ledr_io, LEDG, hex, fb_base, vblank, pal_we, pal_idx, pal_rgb);
+                  SW, KEY, ledr_io, LEDG, hex, fb_base, vblank, pal_we, pal_idx, pal_rgb,
+                  jt_avail, jt_data, jt_ovf, jt_pop);
+
+    jtag : entity work.jtag_rx
+        port map (clk, reset, jt_pop, jt_avail, jt_data, jt_ovf);
 
     vid : entity work.video
         port map (clk, reset, fb_base, pal_we, pal_idx, pal_rgb, vblank,
@@ -208,6 +215,8 @@ begin
 
     kbd : entity work.ps2_rx
         port map (clk, reset, PS2_CLK, PS2_DAT, kbd_valid, kbd_data);
+
+    FL_CE_N <= '0';   -- the flash is the only thing on its bus
 
     LEDR <= halted & ledr_io(8 downto 0);
     HEX0 <= seg7(hex(3 downto 0));

@@ -193,10 +193,13 @@ sw-clean:
 # soc-test and soc-boot swap the boot ROM, so run `make rom` before Quartus.
 
 NVC   ?= nvc
+# Quartus gets rtl/vjtag_port.vhd in place of the simulation stand-in
+VJTAG := sim/vjtag_port_sim.vhd
 NVCW  := $(NVC) --std=1993 --work=work:$(BUILD)/work -M 512m -H 1g
-RTL   := rtl/boot_rom_data.vhd rtl/sdpram.vhd rtl/cpu.vhd rtl/icache.vhd rtl/dcache.vhd \
+RTL   := $(VJTAG) rtl/boot_rom_data.vhd rtl/sdpram.vhd rtl/cpu.vhd rtl/icache.vhd rtl/dcache.vhd \
          rtl/membus.vhd rtl/boot_rom.vhd rtl/sram_ctrl.vhd rtl/sdram_ctrl.vhd rtl/flash_ctrl.vhd \
-         rtl/io.vhd rtl/video.vhd rtl/uart.vhd rtl/ps2_rx.vhd rtl/doomacracy.vhd
+         rtl/io.vhd rtl/video.vhd rtl/uart.vhd rtl/ps2_rx.vhd rtl/jtag_rx.vhd rtl/doomacracy.vhd
+QRTL  := $(RTL:sim/vjtag_port_sim.vhd=rtl/vjtag_port.vhd)
 SIM   := sim/models.vhd sim/tb_soc.vhd sim/tb_cpu.vhd
 SOCT  := sim/soctest
 TRACE_N ?= 3000000
@@ -231,14 +234,22 @@ soc-boot: rom sw emu
 	    -gTRACE=$(BUILD)/rtl_trace.txt -gTRACE_MAX=$(TRACE_N) -gMAX_MS=1000 -gDUMP_EVERY=10 -r
 	$(PYTHON) tools/cmptrace.py $(BUILD)/emu_trace.txt $(BUILD)/rtl_trace.txt
 
+# JTAG loader end to end: erased flash, SW9 up, the stand-in JTAG port plays
+# sim/jtagtest/stream.hex; the real boot ROM must program the flash and then
+# boot the image it wrote, which prints "hello from flash".
+.PHONY: jtag-test
+jtag-test: rom
+	$(MAKE) -C sim/jtagtest
+	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=none -gSWITCHES=512 -gMAX_MS=60 -gDUMP_FIRST=100000 -r
+
 PPM2PNG_SIM = cd sim/out && for f in *.ppm; do [ -f "$$f" ] && $(MAGICK) $$f $${f%.ppm}.png && rm $$f; done; true
 
 # Quartus archive: everything flat in one folder, the way the lab's projects
 # are. Builds the real boot ROM first so the archive never carries a test one.
-QAR_FILES := doomacracy.qpf doomacracy.qsf doomacracy.sdc $(notdir $(RTL))
+QAR_FILES := doomacracy.qpf doomacracy.qsf doomacracy.sdc $(notdir $(QRTL)) jtag_flash.tcl flash.bin
 .PHONY: qar
-qar: rom
+qar: rom $(BUILD)/flash.bin
 	@rm -rf $(BUILD)/qar && mkdir -p $(BUILD)/qar
-	cp quartus/doomacracy.qpf quartus/doomacracy.sdc $(RTL) $(BUILD)/qar/
+	cp quartus/doomacracy.qpf quartus/doomacracy.sdc $(QRTL) tools/jtag_flash.tcl $(BUILD)/flash.bin $(BUILD)/qar/
 	sed 's|\.\./rtl/||' quartus/doomacracy.qsf > $(BUILD)/qar/doomacracy.qsf
 	$(PYTHON) tools/qar.py pack $(BUILD)/doomacracy.qar $(BUILD)/qar $(QAR_FILES)

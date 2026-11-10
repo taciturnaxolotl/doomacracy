@@ -61,6 +61,8 @@ loads.
 | `0x20` | `HEX` | W | `[15:0]` shown as four hex digits on HEX3..0 |
 | `0x30` | `FB_BASE` | R/W | byte offset into SRAM of the displayed framebuffer, reset value `0x60000`; latched at the start of vertical blank |
 | `0x34` | `FRAME_COUNT` | R | increments at the start of vertical blank, in the same cycle `FB_BASE` is latched |
+| `0x40` | `JTAG_DATA` | R | next word from the JTAG loader; reading pops a 16-word FIFO |
+| `0x44` | `JTAG_STATUS` | R | bit 0 = word waiting, bit 1 = FIFO overflowed (sticky until reset) |
 | `0x38` | `PALETTE` | W | `[31:24]` index, `[23:16]` R, `[15:8]` G, `[7:0]` B; hardware keeps the top 4 bits of each |
 
 UART is 115200 8N1 on the DE1 RS-232 port.
@@ -122,3 +124,24 @@ demo1`: about 1.28M instructions per frame at CPI 3.0, so roughly 13 fps.
 Cache size barely matters (4 KB to 32 KB each moves it from 12 to 14 fps);
 what limits it is the multicycle core itself, 2 cycles per instruction and 3
 per load or store. A pipelined core is the next big win.
+
+## JTAG flash loader
+
+With SW9 up at reset, the boot ROM writes a new flash image before booting.
+`tools/jtag_flash.tcl` (run with `quartus_stp`) sends it through an Altera
+Virtual JTAG instance (`rtl/vjtag_port.vhd`, 2-bit IR):
+
+- IR 1: DR scans carry the stream, 32 bits per word, least significant bit
+  first. `rtl/jtag_rx.vhd` moves each word into the system clock domain and a
+  16-word FIFO behind `JTAG_DATA`.
+- IR 2: a 32-bit DR capture of {overflow, words received}.
+
+Stream: `0x4A544147` ("JTAG"), word count n, n image words, their 32-bit
+sum. The boot ROM buffers the image in SDRAM, checks the sum, chip-erases,
+programs every byte that isn't `FF` (AMD byte-mode commands, DQ7 data
+polling), verifies, and then boots normally.
+
+HEX shows the phase: `1xxx` receiving, `2000` erasing, `3xxx` programming,
+`4000` verifying, `600d` done. Errors: `E010` image too big, `E011` bad
+checksum, `E012` FIFO overflow, `E013` erase failed, `E014` program failed,
+`E015` verify mismatch, each followed by a value as with `E001`.

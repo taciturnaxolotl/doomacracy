@@ -30,7 +30,11 @@ entity io is
         vblank        : in  std_logic;
         pal_we        : out std_logic;
         pal_idx       : out std_logic_vector(7 downto 0);
-        pal_rgb       : out std_logic_vector(11 downto 0)
+        pal_rgb       : out std_logic_vector(11 downto 0);
+        jtag_avail    : in  std_logic;
+        jtag_data     : in  std_logic_vector(31 downto 0);
+        jtag_ovf      : in  std_logic;
+        jtag_pop      : out std_logic
     );
 end io;
 
@@ -72,6 +76,7 @@ begin
             ack_r         <= '0';
             uart_tx_start <= '0';
             pal_we        <= '0';
+            jtag_pop      <= '0';
             cycles        <= cycles + 1;
             if us_div = 49 then
                 us_div <= 0;
@@ -120,6 +125,10 @@ begin
                         when x"14" => rdata_r <= x"000" & key & "000000" & sw;
                         when x"30" => rdata_r <= "0000000000000" & fb_r;
                         when x"34" => rdata_r <= std_logic_vector(frames);
+                        when x"40" =>
+                            rdata_r  <= jtag_data;
+                            jtag_pop <= jtag_avail;
+                        when x"44" => rdata_r(1 downto 0) <= jtag_ovf & jtag_avail;
                         when others => null;
                     end case;
                 end if;

@@ -21,6 +21,26 @@ make qar               # build/doomacracy.qar Quartus archive
 
 The WAD is not bundled with the repo; put the shareware `doom1.wad` in `wad/`.
 
+## Running it on the board
+
+`make qar` builds `build/doomacracy.qar`, which also carries `flash.bin` and
+`jtag_flash.tcl`. In Quartus II 13.0 SP1:
+
+1. Restore the archive, compile, and program `doomacracy.sof` (JTAG mode,
+   one device in the chain).
+2. Load the flash once, no Control Panel needed: put SW9 up, press KEY0 (HEX
+   shows `1000`), then from the project folder run
+
+   ```
+   quartus_stp -t jtag_flash.tcl flash.bin
+   ```
+
+   HEX then counts through `2000` (erase, can take a minute), `3xxx`
+   (program), `4000` (verify) and `600d`, and the game boots.
+3. Put SW9 back down. From now on KEY0 just boots Doom.
+
+Redo step 2 only when the firmware changes.
+
 the canonical repo for this is hosted on tangled over at [`https://tangled.org/dunkirk.sh/doomacracy`](https://tangled.org/dunkirk.sh/doomacracy)
 
 <p align="center">
