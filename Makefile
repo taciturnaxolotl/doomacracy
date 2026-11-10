@@ -232,3 +232,13 @@ soc-boot: rom sw emu
 	$(PYTHON) tools/cmptrace.py $(BUILD)/emu_trace.txt $(BUILD)/rtl_trace.txt
 
 PPM2PNG_SIM = cd sim/out && for f in *.ppm; do [ -f "$$f" ] && $(MAGICK) $$f $${f%.ppm}.png && rm $$f; done; true
+
+# Quartus archive: everything flat in one folder, the way the lab's projects
+# are. Builds the real boot ROM first so the archive never carries a test one.
+QAR_FILES := doomacracy.qpf doomacracy.qsf doomacracy.sdc $(notdir $(RTL))
+.PHONY: qar
+qar: rom
+	@rm -rf $(BUILD)/qar && mkdir -p $(BUILD)/qar
+	cp quartus/doomacracy.qpf quartus/doomacracy.sdc $(RTL) $(BUILD)/qar/
+	sed 's|\.\./rtl/||' quartus/doomacracy.qsf > $(BUILD)/qar/doomacracy.qsf
+	$(PYTHON) tools/qar.py pack $(BUILD)/doomacracy.qar $(BUILD)/qar $(QAR_FILES)

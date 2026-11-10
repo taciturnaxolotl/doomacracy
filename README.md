@@ -12,10 +12,11 @@ The majority of this project was done with llms as a what if question on whether
 nix develop path:$PWD
 make sw emu            # firmware, flash image, emulator
 make run-emu           # title screen in build/frames/
-make cpu-test          # CPU against ideal memory, compare with the host
+make cpu-test          # CPU against ideal memory
 make soc-test          # whole board in nvc with chip models
 make soc-boot          # boot the real firmware in nvc and compare with the emulator
-make rom               # put the real boot ROM back before Quartus
+make rom               # adds back boot rom
+make qar               # build/doomacracy.qar Quartus archive
 ```
 
 The WAD is not bundled with the repo; put the shareware `doom1.wad` in `wad/`.
