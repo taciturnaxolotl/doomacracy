@@ -1,0 +1,4 @@
+alu 897a099d
+mem 8c35abe1
+fib 00000262
+all 6d170749

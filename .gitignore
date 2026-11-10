@@ -1,0 +1,10 @@
+build/
+wad/*.wad
+third_party/
+sim/out/
+sw/build/
+sim/cputest/*.elf
+sim/cputest/*.bin
+sim/cputest/torture_host
+sim/soctest/*.elf
+sim/soctest/*.bin

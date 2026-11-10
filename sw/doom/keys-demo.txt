@@ -1,0 +1,31 @@
+# doomacracy emulator key script: start a new game and play a bit.
+# Format: "<vga_frame> tokens..." (frame = FRAME_COUNT, 60 per second) or
+# "f<flip> tokens...". Tokens: 2-digit hex = raw PS/2 set-2 byte,
+# +name = make, -name = break, *name = make then break. See emu --help.
+#
+# title screen is up after about 1 s (frame ~55)
+120 *enter          # open the menu
+180 *enter          # New Game
+240 *enter          # episode 1 (Knee-Deep in the Dead)
+300 *enter          # skill: Hurt Me Plenty (default)
+# gameplay
+420 +up             # walk forward
+480 +rctrl          # fire
+540 -rctrl
+560 +lshift         # run
+620 +left           # turn left while running
+650 -left
+700 +lctrl          # fire again (left ctrl)
+760 -lctrl
+800 -up
+800 -lshift
+820 *space          # use
+860 +right
+900 -right
+900 +up
+960 *2              # pistol
+1000 -up
+1020 *tab           # automap
+1100 *tab
+1140 *esc           # menu
+1200 *esc
