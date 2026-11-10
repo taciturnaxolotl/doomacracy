@@ -38,16 +38,29 @@ static NOINLINE void puthex(uint32_t v)
     }
 }
 
-static NOINLINE __attribute__((noreturn)) void fail(uint32_t code)
+/* Halt with an error. HEX cycles once a second through Ennn, then the
+   upper and lower halves of the offending value, so a board without a
+   serial cable still shows what went wrong. */
+static NOINLINE __attribute__((noreturn)) void fail(uint32_t code, uint32_t value)
 {
     puts_imm("boot: halted, error ");
     puthex(code);
+    puts_imm(" value ");
+    puthex(value);
     puts_imm("\r\n");
     LEDR = 0x3ff;
     LEDG = 0;
-    HEX = 0xE000 | (code & 0xfff);
-    for (;;)
-        ;
+    for (uint32_t step = 0;; step++) {
+        uint32_t t;
+        switch (step % 3) {
+        case 0:  HEX = 0xE000 | (code & 0xfff); break;
+        case 1:  HEX = value >> 16; break;
+        default: HEX = value & 0xffff; break;
+        }
+        t = TIMER_US;
+        while (TIMER_US - t < 1000000u)
+            ;
+    }
 }
 
 void __attribute__((noreturn)) boot_main(void)
@@ -65,7 +78,7 @@ void __attribute__((noreturn)) boot_main(void)
         puts_imm("boot: bad flash magic ");
         puthex(magic);
         puts_imm(" (want 4d4f4f44)\r\n");
-        fail(1);
+        fail(1, magic);
     }
     load = h->load_addr;
     len = h->length;
@@ -84,11 +97,11 @@ void __attribute__((noreturn)) boot_main(void)
         load + len > SRAM_BASE + FB_A_OFFSET || load + len < load ||
         len > FLASH_SIZE - FLASH_FW_OFFSET) {
         puts_imm("boot: bad load_addr/length\r\n");
-        fail(2);
+        fail(2, len);
     }
     if ((entry & 3) || entry < load || entry >= load + len) {
         puts_imm("boot: bad entry\r\n");
-        fail(3);
+        fail(3, entry);
     }
 
     HEX = 0xB002;
@@ -107,5 +120,5 @@ void __attribute__((noreturn)) boot_main(void)
     HEX = 0xB003;
     LEDG = 3;
     ((void (*)(void))entry)();
-    fail(4);
+    fail(4, entry);
 }
