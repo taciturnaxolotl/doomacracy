@@ -18,7 +18,7 @@ print(f"""/dts-v1/;
 	model = "doomacracy (Terasic DE1, RV32IMA)";
 
 	chosen {{
-		bootargs = "earlycon=uart8250,mmio32,0xf0001000 console=ttyS0";
+		bootargs = "earlycon=uart8250,mmio32,0xf0001000 console=tty0 console=ttyS0";
 		stdout-path = &uart0;
 	}};
 
@@ -53,6 +53,17 @@ print(f"""/dts-v1/;
 		#size-cells = <1>;
 		compatible = "simple-bus";
 		ranges;
+
+		/* 320x200 RGB565 in SRAM; the boot ROM points the video at it
+		   (FB_BASE 0x40000, VIDEO_MODE 1) before starting the kernel */
+		framebuffer@10040000 {{
+			compatible = "simple-framebuffer";
+			reg = <0x10040000 0x1f400>;
+			width = <320>;
+			height = <200>;
+			stride = <640>;
+			format = "r5g6b5";
+		}};
 
 		uart0: serial@f0001000 {{
 			compatible = "ns16550a";

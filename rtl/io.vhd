@@ -42,6 +42,7 @@ entity io is
         ledg          : out std_logic_vector(7 downto 0);
         hex           : out std_logic_vector(15 downto 0);
         fb_base       : out std_logic_vector(18 downto 0);
+        video_mode16  : out std_logic;
         vblank        : in  std_logic;
         pal_we        : out std_logic;
         pal_idx       : out std_logic_vector(7 downto 0);
@@ -74,6 +75,7 @@ architecture rtl of io is
     signal us       : unsigned(63 downto 0) := (others => '0');   -- also CLINT mtime
     signal us_div   : integer range 0 to 49 := 0;
     signal frames   : unsigned(31 downto 0) := (others => '0');
+    signal mode16_r : std_logic := '0';
     signal fb_r     : std_logic_vector(18 downto 0) := "110" & x"0000";  -- 0x60000
     signal ledr_r   : std_logic_vector(9 downto 0) := (others => '0');
     signal ledg_r   : std_logic_vector(7 downto 0) := (others => '0');
@@ -107,6 +109,7 @@ begin
     ack     <= ack_r;
     rdata   <= rdata_r;
     fb_base <= fb_r;
+    video_mode16 <= mode16_r;
     ledr    <= ledr_r;
     ledg    <= ledg_r;
     hex     <= hex_r;
@@ -246,6 +249,7 @@ begin
                         when x"1C" => ledg_r <= wdata(7 downto 0);
                         when x"20" => hex_r  <= wdata(15 downto 0);
                         when x"30" => fb_r   <= wdata(18 downto 0);
+                        when x"3C" => mode16_r <= wdata(0);
                         when x"38" => pal_we <= '1';
                         when others => null;
                     end case;
@@ -264,6 +268,7 @@ begin
                             end if;
                         when x"14" => rdata_r <= x"000" & key & "000000" & sw;
                         when x"30" => rdata_r <= "0000000000000" & fb_r;
+                        when x"3C" => rdata_r(0) <= mode16_r;
                         when x"34" => rdata_r <= std_logic_vector(frames);
                         when x"40" =>
                             rdata_r  <= jtag_data;
@@ -290,6 +295,7 @@ begin
             if reset = '1' then
                 k_wr <= (others => '0'); k_rd <= (others => '0'); k_count <= 0;
                 rx_full  <= '0';
+                mode16_r <= '0';
                 u_ier    <= (others => '0');
                 u_lcr    <= (others => '0');
                 u_mcr    <= (others => '0');

@@ -64,6 +64,20 @@ int main(void) {
         if (k & 0x100) { out(' '); hex(k & 0xff); }
     }
     out('\n');
+    // RGB565 mode: red/green/blue/white bars over a grey ramp at SRAM 0x40000
+    volatile uint16_t *fb16 = (volatile uint16_t *)0x10040000u;
+    for (int y = 0; y < 200; y++)
+        for (int x = 0; x < 320; x++) {
+            uint16_t c;
+            if (y < 100) c = x < 80 ? 0xF800 : x < 160 ? 0x07E0 : x < 240 ? 0x001F : 0xFFFF;
+            else { uint16_t g = (uint16_t)(x * 31 / 319); c = (uint16_t)(g << 11 | (g * 2) << 5 | g); }
+            fb16[y * 320 + x] = c;
+        }
+    IO(0x30) = 0x40000;
+    IO(0x3C) = 1;
+    f = IO(0x34);
+    while (IO(0x34) < f + 4) ;
+    puts_("mode16 "); hex(IO(0x3C)); out('\n');
     puts_(bad ? "FAIL\n" : "PASS\n");
     IO(0x18) = bad ? 0x3ff : 1;
     return bad;

@@ -26,6 +26,7 @@
 #define FB_BASE     IO_REG(0x30)
 #define FRAME_COUNT IO_REG(0x34)
 #define PALETTE     IO_REG(0x38)
+#define VIDEO_MODE  IO_REG(0x3C)   /* bit 0: RGB565 instead of palette */
 #define JTAG_DATA   IO_REG(0x40)   /* read pops the next word from the JTAG loader */
 #define JTAG_STATUS IO_REG(0x44)   /* bit 0 word waiting, bit 1 overflow (sticky) */
 
@@ -60,5 +61,6 @@ typedef struct {
 #define LINUX_MAGIC   0x58554E4Cu
 #define LINUX_DTB_AT  (SDRAM_BASE + SDRAM_SIZE - 0x4000u)
 #define LINUX_ENTRY   0x80000000u
+#define LINUX_FB_OFFSET 0x40000u   /* SRAM offset of Linux's 320x200 RGB565 framebuffer */
 
 #endif

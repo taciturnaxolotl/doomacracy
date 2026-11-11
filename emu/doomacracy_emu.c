@@ -66,7 +66,8 @@ static const char *rname[R_N] = { "rom", "sram", "sdram", "flash", "io" };
 static uint64_t nload[R_N], nstore[R_N];
 
 /* io state */
-static uint32_t fb_base, ledr, ledg, hex, switches;
+static uint32_t fb_base, ledr, ledg, hex, switches, video_mode;
+static uint64_t dump_vga, next_vga_dump;  /* --dump-vga: dump every N VGA frames */
 static uint32_t palette[256]; /* 0x00RRGGBB as written (8 bits each) */
 static uint64_t flips;
 
@@ -363,7 +364,8 @@ static void dump_frame(void)
     FILE *f;
     int xx, yy, sx, sy, s = dump_scale;
     static uint8_t row[FB_W * 2 * 3];
-    if (fb_base + FB_W * FB_H > SRAM_SIZE) {
+    uint32_t bpp = (video_mode & 1) ? 2 : 1;
+    if (fb_base + FB_W * FB_H * bpp > SRAM_SIZE) {
         fprintf(stderr, "emu: FB_BASE %08x out of SRAM, frame not dumped\n", fb_base);
         return;
     }
@@ -372,9 +374,14 @@ static void dump_frame(void)
     if (!f) { fprintf(stderr, "emu: cannot write %s\n", path); return; }
     fprintf(f, "P6\n%d %d\n255\n", FB_W * s, FB_H * s);
     for (yy = 0; yy < FB_H; yy++) {
-        const uint8_t *src = sram + fb_base + yy * FB_W;
+        const uint8_t *src = sram + fb_base + yy * FB_W * bpp;
         for (xx = 0; xx < FB_W; xx++) {
-            uint32_t c = palette[src[xx]];
+            uint32_t c;
+            if (bpp == 2) {   /* RGB565, expanded to 8 bits per channel */
+                uint32_t p = src[2 * xx] | src[2 * xx + 1] << 8;
+                c = ((p >> 11) & 31) * 255 / 31 << 16 | ((p >> 5) & 63) * 255 / 63 << 8 | (p & 31) * 255 / 31;
+            } else
+                c = palette[src[xx]];
             uint8_t r = c >> 16, g = c >> 8, b = c;
             if (!dump_full) { r = (r >> 4) * 17; g = (g >> 4) * 17; b = (b >> 4) * 17; }
             for (sx = 0; sx < s; sx++) {
@@ -498,6 +505,7 @@ static uint32_t io_read_regs(uint32_t off)
         return 0;
     case 0x14: return (switches & 0x3ff) | (0xfu << 16);
     case 0x30: return fb_base;
+    case 0x3C: return video_mode;
     case 0x34: return (uint32_t)frame_count();
     case 0x40: {
         uint32_t w = 0;
@@ -539,9 +547,10 @@ static void io_write_regs(uint32_t off, uint32_t v)
     case 0x1C: ledg = v & 0xff; return;
     case 0x20: hex = v & 0xffff; return;
     case 0x30:
-        fb_base = v;
+        fb_base = v & 0x7ffff;
         on_flip();
         return;
+    case 0x3C: video_mode = v & 1; return;
     case 0x38:
         palette[v >> 24] = v & 0xffffff;
         return;
@@ -706,6 +715,10 @@ static int run_inner(void)
     for (;;) {
         if (mtimecmp != ~0ull && (instret & 63) == 0) {
             if (mtime_now() >= mtimecmp) mip_r |= 0x80; else mip_r &= ~0x80u;
+        }
+        if (dump_vga && dump_dir && (instret & 4095) == 0 && frame_count() >= next_vga_dump) {
+            next_vga_dump = frame_count() + dump_vga;
+            dump_frame();
         }
         if ((mip_r & mie_r & 0x88) && ((mstatus & 8) || priv < 3)) {
             take_trap(mip_r & mie_r & 0x80 ? 0x80000007u : 0x80000003u, 0);
@@ -1014,6 +1027,7 @@ static void usage(void)
 "  --switches N       value of SW[9:0] (0x200 = SW9, JTAG flash loader)\n"
 "  --jtag FILE        JTAG loader stream (tools/jtag_stream.py) for SW9 mode\n"
 "  --flash none       start with an erased flash\n"
+"  --dump-vga N       with --dump: also dump the screen every N VGA frames (no page flips needed)\n"
 "  --kernel FILE      boot a Linux Image at 0x80000000 (SDRAM alias) instead of the boot ROM\n"
 "  --dtb FILE         device tree for --kernel, placed in the top 16 KB of SDRAM\n"
 "  --sdram-mb N       SDRAM size (default 8, the DE1's; larger is emulator only)\n"
@@ -1052,6 +1066,7 @@ int main(int argc, char **argv)
         else if (!strcmp(o, "--switches")) switches = strtoul(ARG, NULL, 0);
         else if (!strcmp(o, "--jtag")) jtag_path = ARG;
         else if (!strcmp(o, "--kernel")) kernel_path = ARG;
+        else if (!strcmp(o, "--dump-vga")) dump_vga = strtoull(ARG, NULL, 0);
         else if (!strcmp(o, "--dtb")) dtb_path = ARG;
         else if (!strcmp(o, "--sdram-mb")) sdram_size_v = (uint32_t)atoi(ARG) << 20;
         else if (!strcmp(o, "--flash-out")) flash_out = ARG;

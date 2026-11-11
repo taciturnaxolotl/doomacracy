@@ -732,7 +732,6 @@ CONFIG_MFD_SYSCON=y
 #
 # Frame buffer Devices
 #
-# CONFIG_FB is not set
 # end of Frame buffer Devices
 
 #
@@ -1306,3 +1305,14 @@ CONFIG_ARCH_USE_MEMTEST=y
 #
 # end of Rust hacking
 # end of Kernel hacking
+CONFIG_FB=y
+CONFIG_FB_SIMPLE=y
+CONFIG_FRAMEBUFFER_CONSOLE=y
+CONFIG_FONTS=y
+CONFIG_FONT_6x8=y
+CONFIG_FB_CFB_FILLRECT=y
+CONFIG_FB_CFB_COPYAREA=y
+CONFIG_FB_CFB_IMAGEBLIT=y
+# CONFIG_FONT_8x8 is not set
+# CONFIG_FONT_8x16 is not set
+# CONFIG_LOGO is not set

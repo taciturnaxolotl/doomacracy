@@ -41,3 +41,5 @@ null::sysinit:/bin/ln -sf /proc/self/fd/2 /dev/stderr
 
 # doomacracy: a root shell on the console
 console::respawn:-/bin/sh
+# and one on the screen (tty1, the framebuffer console)
+tty1::respawn:-/bin/sh

@@ -94,6 +94,7 @@ architecture rtl of doomacracy is
     signal v_addr : std_logic_vector(17 downto 0);
     signal v_data : std_logic_vector(15 downto 0);
     signal fb_base : std_logic_vector(18 downto 0);
+    signal mode16  : std_logic;
     signal pal_idx : std_logic_vector(7 downto 0);
     signal pal_rgb : std_logic_vector(11 downto 0);
 
@@ -207,7 +208,7 @@ begin
     regs : entity work.io
         port map (clk, reset, io_req, s_addr, s_we, s_wdata, io_ack, io_rdata,
                   tx_start, tx_data, tx_ready, rx_valid, rx_data, kbd_valid, kbd_data,
-                  SW, KEY, ledr_io, LEDG, hex, fb_base, vblank, pal_we, pal_idx, pal_rgb,
+                  SW, KEY, ledr_io, LEDG, hex, fb_base, mode16, vblank, pal_we, pal_idx, pal_rgb,
                   jt_avail, jt_data, jt_ovf, jt_pop,
                   con_tx_we, con_tx_data, con_tx_full, con_rx_avail, con_rx_data, con_rx_pop, con_attached,
                   mtime, mtip, msip, poweroff, reboot);
@@ -217,7 +218,7 @@ begin
                   con_tx_we, con_tx_data, con_tx_full, con_rx_avail, con_rx_data, con_rx_pop, con_attached);
 
     vid : entity work.video
-        port map (clk, reset, fb_base, pal_we, pal_idx, pal_rgb, vblank,
+        port map (clk, reset, fb_base, mode16, pal_we, pal_idx, pal_rgb, vblank,
                   v_req, v_addr, v_ack, v_data,
                   VGA_R, VGA_G, VGA_B, VGA_HS, VGA_VS);
 

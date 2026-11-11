@@ -63,6 +63,7 @@ loads.
 | `0x34` | `FRAME_COUNT` | R | increments at the start of vertical blank, in the same cycle `FB_BASE` is latched |
 | `0x40` | `JTAG_DATA` | R | next word from the JTAG loader; reading pops a 16-word FIFO |
 | `0x44` | `JTAG_STATUS` | R | bit 0 = word waiting, bit 1 = FIFO overflowed (sticky until reset) |
+| `0x3C` | `VIDEO_MODE` | R/W | bit 0: RGB565 pixels instead of palette indices; latched with `FB_BASE` at vertical blank; 0 after reset |
 | `0x38` | `PALETTE` | W | `[31:24]` index, `[23:16]` R, `[15:8]` G, `[7:0]` B; hardware keeps the top 4 bits of each |
 
 UART is 115200 8N1 on the DE1 RS-232 port.
@@ -99,6 +100,9 @@ and spins with the LEDs showing an error.
 - Each 320-byte source line is prefetched from SRAM into an M4K line buffer while
   the previous line is on screen. Video wins SRAM arbitration.
 - Palette: 256 x 12-bit M4K, written through `PALETTE`.
+- `VIDEO_MODE` bit 0 switches to 320x200 RGB565 (640 bytes a line, top 4
+  bits of each channel to the DAC); Linux's console uses it. The line buffer
+  holds two 320-halfword lines (4 M4K).
 
 ## Blocks
 

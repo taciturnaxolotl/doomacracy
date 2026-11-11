@@ -43,7 +43,7 @@ static NOINLINE void puthex(uint32_t v)
    serial cable still shows what went wrong. */
 static NOINLINE __attribute__((noreturn)) void fail(uint32_t code, uint32_t value)
 {
-    puts_imm("boot: halted, error ");
+    puts_imm("boot: error ");
     puthex(code);
     puts_imm(" value ");
     puthex(value);
@@ -172,9 +172,6 @@ static NOINLINE void jtag_load(void)
             flash_cmd(0xA0);
             FL8(i) = src[i];
             if (flash_wait(i, src[i])) {
-                puts_imm("jtag: program failed at ");
-                puthex(i);
-                puts_imm("\r\n");
                 fail(0x14, flash_diag());
             }
         }
@@ -220,6 +217,8 @@ void __attribute__((noreturn)) boot_main(void)
         HEX = 0xB104;
         copy_words((uint32_t *)SDRAM_BASE, FLASH_FW_OFFSET, klen);
         copy_words((uint32_t *)LINUX_DTB_AT, doff, dlen);
+        FB_BASE = LINUX_FB_OFFSET;
+        VIDEO_MODE = 1;              /* RGB565 for Linux's simplefb console */
         HEX = 0xB105;
         {
             register uint32_t a0 __asm__("a0") = 0;
@@ -228,9 +227,6 @@ void __attribute__((noreturn)) boot_main(void)
         }
     }
     if (magic != FLASH_MAGIC) {
-        puts_imm("boot: bad flash magic ");
-        puthex(magic);
-        puts_imm(" (want 4d4f4f44)\r\n");
         fail(1, magic);
     }
     load = h->load_addr;
@@ -249,11 +245,9 @@ void __attribute__((noreturn)) boot_main(void)
     if ((load & 3) || (len & 3) || load < SRAM_BASE ||
         load + len > SRAM_BASE + FB_A_OFFSET || load + len < load ||
         len > FLASH_SIZE - FLASH_FW_OFFSET) {
-        puts_imm("boot: bad load_addr/length\r\n");
         fail(2, len);
     }
     if ((entry & 3) || entry < load || entry >= load + len) {
-        puts_imm("boot: bad entry\r\n");
         fail(3, entry);
     }
 
