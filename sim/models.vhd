@@ -59,7 +59,16 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 
 -- IS42S16400: 4 banks x 4096 x 256 x 16. Only BL1, CL2 are modelled.
+-- Up to two raw binary files can be preloaded at byte offsets (a Linux
+-- kernel and its device tree); the controller's halfword address is
+-- row & bank & column, which is also the index into mem.
 entity sdram_model is
+    generic (
+        IMG0    : string  := "";
+        IMG0_AT : natural := 0;
+        IMG1    : string  := "";
+        IMG1_AT : natural := 0
+    );
     port (
         clk   : in    std_logic;
         a     : in    std_logic_vector(11 downto 0);
@@ -78,6 +87,32 @@ architecture sim of sdram_model is
     type mem_t is array (0 to 4194303) of integer range 0 to 65535;
     shared variable mem : mem_t := (others => 0);
     type rows_t is array (0 to 3) of integer;
+    type bin_file is file of character;
+
+    procedure preload(name : string; at : natural) is
+        file f      : bin_file;
+        variable st : file_open_status;
+        variable c  : character;
+        variable i  : natural := at;
+    begin
+        if name = "" then
+            return;
+        end if;
+        file_open(st, f, name, read_mode);
+        assert st = open_ok report "sdram: cannot open " & name severity failure;
+        while not endfile(f) and i < 2 * mem'length loop
+            read(f, c);
+            if i mod 2 = 0 then
+                mem(i / 2) := (mem(i / 2) / 256) * 256 + character'pos(c);
+            else
+                mem(i / 2) := (mem(i / 2) mod 256) + 256 * character'pos(c);
+            end if;
+            i := i + 1;
+        end loop;
+        file_close(f);
+        report "sdram: loaded " & integer'image(i - at) & " bytes from " & name
+               & " at " & integer'image(at);
+    end procedure;
 begin
     process
         variable row    : rows_t := (others => -1);
@@ -91,6 +126,8 @@ begin
     begin
         if first then
             dq <= (others => 'Z');
+            preload(IMG0, IMG0_AT);
+            preload(IMG1, IMG1_AT);
             first := false;
         end if;
         wait until rising_edge(clk);

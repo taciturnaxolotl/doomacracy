@@ -1,5 +1,5 @@
 -- Data cache: direct mapped, 16-byte lines, write-through with a one-entry
--- write buffer, no write allocate. Caches SRAM (0x1...) and SDRAM (0x2...).
+-- write buffer, no write allocate. Caches SRAM (0x1...) and SDRAM (0x2... and 0x8...).
 -- Everything else goes straight through as a single uncached access.
 --
 -- A cacheable store updates the line if present, parks in the write buffer
@@ -10,6 +10,10 @@
 -- The CPU primes the RAM read with its combinational address (raddr) the
 -- cycle before a request; every decision uses addr, which is registered, so
 -- the CPU's address adder stays off the memory-side paths.
+--
+-- 0x8xxxxxxx is an alias of the SDRAM at 0x2xxxxxxx (for Linux). Tags are
+-- kept with region 8 folded onto region 2, so both views hit the same line
+-- and a store through one can never leave a stale copy under the other.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -60,6 +64,7 @@ architecture rtl of dcache is
     signal data_wd, data_q : std_logic_vector(31 downto 0);
     signal hit, cacheable, ack_i : std_logic;
     signal take_store, start_unc, start_fill, drain : std_logic;
+    signal taddr : std_logic_vector(31 downto 0);   -- addr with the alias folded
 begin
     tags : entity work.sdpram
         generic map (IB, TW + 1)
@@ -72,8 +77,9 @@ begin
                       raddr(IB + 3 downto 2), data_q(8 * b + 7 downto 8 * b));
     end generate;
 
-    cacheable <= '1' when addr(31 downto 28) = x"1" or addr(31 downto 28) = x"2" else '0';
-    hit <= '1' when primed = '1' and tag_q(TW) = '1' and tag_q(TW - 1 downto 0) = addr(31 downto 4 + IB) else '0';
+    cacheable <= '1' when addr(31 downto 28) = x"1" or addr(31 downto 28) = x"2" or addr(31 downto 28) = x"8" else '0';
+    taddr <= x"2" & addr(27 downto 0) when addr(31 downto 28) = x"8" else addr;
+    hit <= '1' when primed = '1' and tag_q(TW) = '1' and tag_q(TW - 1 downto 0) = taddr(31 downto 4 + IB) else '0';
 
     take_store <= '1' when state = S_IDLE and req = '1' and we = '1' and cacheable = '1'
                            and primed = '1' and wb_valid = '0' else '0';
@@ -134,7 +140,7 @@ begin
 
     tag_we <= '1' when state = S_INIT or (state = S_FILL and m_ack = '1' and count = 3) else '0';
     tag_wa <= std_logic_vector(init_i) when state = S_INIT else addr(IB + 3 downto 4);
-    tag_wd <= (others => '0') when state = S_INIT else '1' & addr(31 downto 4 + IB);
+    tag_wd <= (others => '0') when state = S_INIT else '1' & taddr(31 downto 4 + IB);
 
     process (clk)
     begin

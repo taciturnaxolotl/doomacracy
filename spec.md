@@ -10,9 +10,9 @@ Quartus.
 | thing | value |
 | --- | --- |
 | board | DE1, Cyclone II EP2C20F484C7 (18,752 LEs, 52 M4K, 26 mult 18x18) |
-| toolchain | Quartus II 13.0 SP1 (last with Cyclone II), nvc for sim |
+| toolchain | Quartus II 8.1 Web Edition (13.0 SP1 also works), nvc for sim; the JTAG Tcl scripts are Tcl 8.4 |
 | system clock | 50 MHz `CLOCK_50`, one clock domain |
-| CPU | RV32IM, no interrupts, no privilege modes |
+| CPU | RV32IMA with Zicsr, M and U modes, timer and software interrupts (see Linux platform) |
 | video | 320x200 8 bpp from SRAM, doubled to 640x400 inside 640x480 @ 60 Hz |
 | input | PS/2 keyboard, raw scancode bytes to software |
 | software | doomgeneric, `riscv32-none-elf-gcc` + newlib, `-march=rv32im -mabi=ilp32` |
@@ -145,3 +145,45 @@ HEX shows the phase: `1xxx` receiving, `2000` erasing, `3xxx` programming,
 `4000` verifying, `600d` done. Errors: `E010` image too big, `E011` bad
 checksum, `E012` FIFO overflow, `E013` erase failed, `E014` program failed,
 `E015` verify mismatch, each followed by a value as with `E001`.
+
+## Linux platform
+
+For a no-MMU Linux. Implemented in both the emulator and the RTL.
+
+| addition | where | notes |
+| --- | --- | --- |
+| A extension | CPU | LR.W, SC.W, AMO*.W (read, compute, write through the data port) |
+| machine-mode CSRs | CPU | mstatus (MIE, MPIE, MPP), misa, mie, mip, mtvec, mscratch, mepc, mcause, mtval, cycle, time, instret |
+| traps | CPU | ecall, ebreak, illegal instruction, misaligned and access faults, MRET; WFI is a no-op in the RTL; M and U privilege |
+| FENCE.I | CPU | clears every I-cache tag (512 cycles) |
+| SDRAM alias | `0x8000_0000` | the same 8 MB as `0x2000_0000`; the D-cache folds both onto one tag, so the two views can't go stale |
+| console | `0xF000_1000` | 16550, registers 4 bytes apart (Linux `ns16550a`, `reg-shift = 2`), polled; output goes to the RS-232 pin and the JTAG console |
+| syscon | `0xF000_2000` | write `0x5555` to power off (CPU halts, HEX `00FF`), `0x7777` to reboot (full board reset) |
+| CLINT | `0xF100_0000` | msip `+0`, mtimecmp `+0x4000`, mtime `+0xBFF8`; mtime counts microseconds and is also `TIMER_US` |
+
+### JTAG console (Virtual JTAG IR 3)
+
+One 80-bit DR scan per poll, least significant bit first, run by
+`tools/jtag_console.tcl`. Board to host: bits 3:0 byte count (0 to 8), bits
+7:4 `0xA`, bits 12:8 RX read pointer (mod 32), bit 13 attached, bytes at bit
+16 + 8i. Host to board: bits 3:0 count, bit 4 attach, bit 5 detach, bytes at
+bit 16 + 8i. Two 16-byte FIFOs; the host never sends more than 16 bytes past
+the board's read pointer. While a host is attached the 16550 reports its
+transmitter busy when the FIFO is full; with no host (or no scan for about
+0.67 s) output is dropped instead, so Linux never stalls.
+
+### Booting Linux from flash
+
+A flash image whose magic is `0x58554E4C` ("LNUX") is a Linux image
+(`tools/mklinuxflash.py`): +4 kernel length, +8 DTB offset, +12 DTB length,
+kernel at `0x100`. The boot ROM copies the kernel to the start of SDRAM and
+the DTB to its top 16 KB, then jumps to `0x80000000` with `a0 = 0` and
+`a1` = the DTB address.
+
+Traps go to `mtvec` only once it is nonzero. Before that every fault stops
+the machine, which keeps bare-metal bugs (and Doom's) loud.
+
+Our own build (`linux/`, Linux 6.8 with a trimmed busybox) boots to a root
+shell in the emulator with the DE1's real 8 MB, with about 3.5 MB free. The
+kernel must have `CONFIG_RISCV_MISALIGNED`, because misaligned loads and
+stores trap here.

@@ -105,6 +105,10 @@ architecture rtl of doomacracy is
     signal ledr_io : std_logic_vector(9 downto 0);
     signal jt_avail, jt_ovf, jt_pop : std_logic;
     signal jt_data : std_logic_vector(31 downto 0);
+    signal con_tx_we, con_tx_full, con_rx_avail, con_rx_pop, con_attached : std_logic;
+    signal con_tx_data, con_rx_data : std_logic_vector(7 downto 0);
+    signal ci_inval, mtip, msip, poweroff, reboot : std_logic;
+    signal mtime : std_logic_vector(63 downto 0);
 
     function seg7(d : std_logic_vector(3 downto 0)) return std_logic_vector is
     begin
@@ -131,12 +135,16 @@ begin
     clk      <= CLOCK_50;
     DRAM_CLK <= not clk;
 
-    -- reset: a short power-on pulse or KEY0, then the CPU waits for SDRAM
+    -- reset: a short power-on pulse, KEY0 or a syscon reboot, then the CPU
+    -- waits for SDRAM
     process (clk)
     begin
         if rising_edge(clk) then
             key_s <= key_s(0) & KEY(0);
-            if por /= 255 then
+            if reboot = '1' then
+                por   <= (others => '0');
+                reset <= '1';
+            elsif por /= 255 then
                 por   <= por + 1;
                 reset <= '1';
             else
@@ -150,11 +158,12 @@ begin
         generic map (TRACE => TRACE, TRACE_MAX => TRACE_MAX)
         port map (clk, cpu_reset, ci_prime, ci_raddr, ci_req, ci_addr, ci_ack, ci_rdata,
                   cd_prime, cd_raddr, cd_req, cd_addr, cd_we, cd_wstrb, cd_wdata, cd_ack, cd_rdata,
+                  ci_inval, mtip, msip, mtime, poweroff,
                   halted, retire, retire_pc, retire_rd, retire_data);
 
     ic : entity work.icache
         generic map (IB => 9)
-        port map (clk, cpu_reset, ci_prime, ci_raddr, ci_req, ci_addr, ci_ack, ci_rdata,
+        port map (clk, cpu_reset, ci_prime, ci_raddr, ci_req, ci_addr, ci_inval, ci_ack, ci_rdata,
                   im_req, im_addr, im_ack, m_rdata);
 
     dc : entity work.dcache
@@ -199,10 +208,13 @@ begin
         port map (clk, reset, io_req, s_addr, s_we, s_wdata, io_ack, io_rdata,
                   tx_start, tx_data, tx_ready, rx_valid, rx_data, kbd_valid, kbd_data,
                   SW, KEY, ledr_io, LEDG, hex, fb_base, vblank, pal_we, pal_idx, pal_rgb,
-                  jt_avail, jt_data, jt_ovf, jt_pop);
+                  jt_avail, jt_data, jt_ovf, jt_pop,
+                  con_tx_we, con_tx_data, con_tx_full, con_rx_avail, con_rx_data, con_rx_pop, con_attached,
+                  mtime, mtip, msip, poweroff, reboot);
 
     jtag : entity work.jtag_rx
-        port map (clk, reset, jt_pop, jt_avail, jt_data, jt_ovf);
+        port map (clk, reset, jt_pop, jt_avail, jt_data, jt_ovf,
+                  con_tx_we, con_tx_data, con_tx_full, con_rx_avail, con_rx_data, con_rx_pop, con_attached);
 
     vid : entity work.video
         port map (clk, reset, fb_base, pal_we, pal_idx, pal_rgb, vblank,

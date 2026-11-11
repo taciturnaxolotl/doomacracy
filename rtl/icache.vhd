@@ -4,6 +4,9 @@
 -- in the first cycle of a request when the CPU primed the read the cycle
 -- before, otherwise one cycle later.
 -- Misses fill the whole line with a 4-word burst on the memory side.
+-- inval (FENCE.I) clears every tag the same way reset does, one line a
+-- cycle; requests wait until that is done. The CPU only raises it while
+-- the cache is idle (in EXEC, with no request outstanding).
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -17,6 +20,7 @@ entity icache is
         raddr   : in  std_logic_vector(31 downto 0);
         req     : in  std_logic;
         addr    : in  std_logic_vector(31 downto 0);
+        inval   : in  std_logic;
         ack     : out std_logic;
         rdata   : out std_logic_vector(31 downto 0);
         m_req   : out std_logic;
@@ -78,7 +82,11 @@ begin
                         state <= S_IDLE;
                     end if;
                 when S_IDLE =>
-                    if req = '1' and primed = '1' and hit = '0' then
+                    if inval = '1' then
+                        state  <= S_INIT;
+                        init_i <= (others => '0');
+                        primed <= '0';
+                    elsif req = '1' and primed = '1' and hit = '0' then
                         state <= S_FILL;
                         count <= "00";
                     end if;

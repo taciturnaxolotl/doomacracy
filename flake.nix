@@ -30,6 +30,7 @@
           packages = [
             (rv32im system).buildPackages.gcc
             pkgs.nvc
+            pkgs.dtc
             pkgs.python3
             pkgs.gnumake
             pkgs.imagemagick

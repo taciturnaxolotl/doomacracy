@@ -54,4 +54,11 @@ typedef struct {
 #define FLASH_HEADER ((volatile flash_header_t *)FLASH_BASE)
 #define FLASH_FW_OFFSET 0x100u
 
+/* Linux flash image: "LNUX", kernel length, DTB offset, DTB length; kernel
+   at FLASH_FW_OFFSET. The boot ROM copies the kernel to the start of SDRAM
+   and the DTB to its top 16 KB, then enters the kernel at 0x80000000. */
+#define LINUX_MAGIC   0x58554E4Cu
+#define LINUX_DTB_AT  (SDRAM_BASE + SDRAM_SIZE - 0x4000u)
+#define LINUX_ENTRY   0x80000000u
+
 #endif

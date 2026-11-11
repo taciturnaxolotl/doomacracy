@@ -24,10 +24,14 @@
 #include <ctype.h>
 #include <errno.h>
 #include <sys/stat.h>
+#include <setjmp.h>
+#include <poll.h>
+#include <unistd.h>
 
 #define ROM_SIZE   (4u * 1024)
 #define SRAM_SIZE  (512u * 1024)
-#define SDRAM_SIZE (8u * 1024 * 1024)
+static uint32_t sdram_size_v = 8u * 1024 * 1024;  /* --sdram-mb */
+#define SDRAM_SIZE sdram_size_v
 #define FLASH_SIZE (4u * 1024 * 1024)
 
 #define CLK_HZ          50000000ull
@@ -41,6 +45,18 @@ static uint8_t *rom, *sram, *sdram, *flash;
 static void die(const char *fmt, ...) __attribute__((noreturn, format(printf, 1, 2)));
 static uint32_t x[32];
 static uint32_t pc;
+
+/* ---- machine mode (Linux support, spec.md "Linux platform") ----
+ * Traps only happen once software installs a handler (mtvec != 0); until
+ * then every fault is fatal, exactly as before, so firmware bugs stay loud. */
+static uint32_t mstatus, mie_r, mip_r, mtvec, mscratch, mepc, mcause, mtval;
+static int priv = 3;                      /* 3 machine, 0 user */
+static uint64_t mtimecmp = ~0ull;
+static uint64_t idle_cycles;              /* time skipped by WFI */
+static uint32_t lr_addr = 1;              /* LR/SC reservation (1 = none) */
+static jmp_buf trap_jb;
+static uint32_t trap_cause, trap_tval;
+static uint8_t uart_ier, uart_lcr, uart_mcr, uart_scr, uart_dll, uart_dlm;
 static uint64_t instret;
 static double cpi = 3.0;
 
@@ -99,7 +115,7 @@ static uint64_t last_arrival;
 /* options */
 static const char *boot_path = "build/boot.bin";
 static const char *flash_path = "build/flash.bin";
-static const char *jtag_path, *flash_out;
+static const char *jtag_path, *flash_out, *kernel_path, *dtb_path;
 static const char *dump_dir;
 static const char *dump_prefix = "frame";
 static uint32_t min_sp = 0xffffffff;
@@ -123,6 +139,24 @@ static void die(const char *fmt, ...)
     fprintf(stderr, "\n");
     stats();
     exit(2);
+}
+
+/* A fault: trap to mtvec if software has a handler, otherwise fatal. */
+static void fault(uint32_t cause, uint32_t tval, const char *fmt, ...)
+    __attribute__((noreturn, format(printf, 3, 4)));
+static void fault(uint32_t cause, uint32_t tval, const char *fmt, ...)
+{
+    char msg[256];
+    va_list ap;
+    if (mtvec) {
+        trap_cause = cause;
+        trap_tval = tval;
+        longjmp(trap_jb, 1);
+    }
+    va_start(ap, fmt);
+    vsnprintf(msg, sizeof msg, fmt, ap);
+    va_end(ap);
+    die("%s", msg);
 }
 
 /* ---------------------------------------------------------------- timing
@@ -194,7 +228,7 @@ static inline void t_store(uint32_t a)
 }
 
 
-static inline uint64_t cycles(void) { return timing ? tcycles : (uint64_t)((double)instret * cpi); }
+static inline uint64_t cycles(void) { return idle_cycles + (timing ? tcycles : (uint64_t)((double)instret * cpi)); }
 static inline uint64_t frame_count(void) { return cycles() / CYCLES_PER_VGA; }
 
 /* ---------------------------------------------------------------- PS/2 */
@@ -381,7 +415,72 @@ static void on_flip(void)
 
 /* ---------------------------------------------------------------- I/O */
 
+/* console UART: a 16550 with 4-byte register spacing (Linux 8250,
+   reg-shift 2), polled, backed by stdin/stdout */
+static int console_rx = -1;
+static int console_poll(void)
+{
+    if (console_rx < 0) {
+        struct pollfd p = { 0, POLLIN, 0 };
+        unsigned char c;
+        if (poll(&p, 1, 0) > 0 && (p.revents & POLLIN) && read(0, &c, 1) == 1)
+            console_rx = c == '\n' ? '\r' : c;
+    }
+    return console_rx >= 0;
+}
+static uint32_t uart16550_read(uint32_t r)
+{
+    if (uart_lcr & 0x80) {
+        if (r == 0) return uart_dll;
+        if (r == 1) return uart_dlm;
+    }
+    switch (r) {
+    case 0: { int c = console_poll() ? console_rx : 0; console_rx = -1; return c; }
+    case 1: return uart_ier;
+    case 2:                                    /* IIR: FIFOs on, highest pending source */
+        if ((uart_ier & 1) && console_poll()) return 0xc4;
+        if (uart_ier & 2) return 0xc2;         /* transmitter always empty */
+        return 0xc1;
+    case 3: return uart_lcr;
+    case 4: return uart_mcr;
+    case 5: return 0x60 | console_poll();      /* THR empty, TEMT, DR */
+    case 6: return 0xb0;                       /* DCD, DSR, CTS */
+    default: return uart_scr;
+    }
+}
+static void uart16550_write(uint32_t r, uint32_t v)
+{
+    v &= 0xff;
+    if (uart_lcr & 0x80 && r <= 1) { if (r) uart_dlm = v; else uart_dll = v; return; }
+    switch (r) {
+    case 0: putchar(v); if (v == '\n') fflush(stdout); return;
+    case 1: uart_ier = v & 0x0f; return;
+    case 3: uart_lcr = v; return;
+    case 4: uart_mcr = v; return;
+    case 7: uart_scr = v; return;
+    }
+}
+static int poweroff_requested;
+static uint32_t io_read_regs(uint32_t off);
 static uint32_t io_read(uint32_t off)
+{
+    if (off >= 0x1000 && off < 0x1020) return uart16550_read((off - 0x1000) >> 2);
+    if (off == 0x2000) return 0;
+    if (off >= 0x1000000 && off < 0x1010000) {          /* CLINT */
+        uint64_t mtime = cycles() / (CLK_HZ / 1000000);
+        switch (off - 0x1000000) {
+        case 0x0000: return (mip_r >> 3) & 1;
+        case 0x4000: return (uint32_t)mtimecmp;
+        case 0x4004: return (uint32_t)(mtimecmp >> 32);
+        case 0xbff8: return (uint32_t)mtime;
+        case 0xbffc: return (uint32_t)(mtime >> 32);
+        }
+        return 0;
+    }
+    if (off > 0xff) fault(5, 0xF0000000u | off, "load from unmapped I/O address %08x", 0xF0000000u | off);
+    return io_read_regs(off);
+}
+static uint32_t io_read_regs(uint32_t off)
 {
     switch (off) {
     case 0x00: return 0; /* no UART receive in the emulator */
@@ -410,7 +509,26 @@ static uint32_t io_read(uint32_t off)
     die("read from undefined/write-only I/O register offset 0x%02x", off);
 }
 
+static void io_write_regs(uint32_t off, uint32_t v);
 static void io_write(uint32_t off, uint32_t v)
+{
+    if (off >= 0x1000 && off < 0x1020) { uart16550_write((off - 0x1000) >> 2, v); return; }
+    if (off == 0x2000) {                                 /* syscon */
+        if (v == 0x5555 || v == 0x7777) { poweroff_requested = v; stop_requested = 1; }
+        return;
+    }
+    if (off >= 0x1000000 && off < 0x1010000) {
+        switch (off - 0x1000000) {
+        case 0x0000: mip_r = (mip_r & ~8u) | ((v & 1) << 3); return;
+        case 0x4000: mtimecmp = (mtimecmp & ~0xffffffffull) | v; return;
+        case 0x4004: mtimecmp = (mtimecmp & 0xffffffffull) | (uint64_t)v << 32; return;
+        }
+        return;
+    }
+    if (off > 0xff) fault(7, 0xF0000000u | off, "store to unmapped I/O address %08x", 0xF0000000u | off);
+    io_write_regs(off, v);
+}
+static void io_write_regs(uint32_t off, uint32_t v)
 {
     switch (off) {
     case 0x00:
@@ -440,13 +558,14 @@ static inline uint8_t *mem_ptr(uint32_t a, int size, int write, int *region)
     case 0x0:
         *region = R_ROM;
         if (a + size > ROM_SIZE) break;
-        if (write) die("store to boot ROM address %08x", a);
+        if (write) fault(7, a, "store to boot ROM address %08x", a);
         return rom + a;
     case 0x1:
         *region = R_SRAM;
         if (off + size > SRAM_SIZE) break;
         return sram + off;
     case 0x2:
+    case 0x8:   /* SDRAM alias for kernels linked at 0x80000000 */
         *region = R_SDRAM;
         if (off + size > SDRAM_SIZE) break;
         return sdram + off;
@@ -454,7 +573,7 @@ static inline uint8_t *mem_ptr(uint32_t a, int size, int write, int *region)
         *region = R_FLASH;
         if (off + size > FLASH_SIZE) break;
         if (write) {
-            if (size != 1) die("%d-byte store to flash address %08x (bytes only)", size, a);
+            if (size != 1) fault(7, a, "%d-byte store to flash address %08x (bytes only)", size, a);
             return NULL;
         }
         return flash + off;
@@ -462,21 +581,20 @@ static inline uint8_t *mem_ptr(uint32_t a, int size, int write, int *region)
         *region = R_IO;
         return NULL;
     }
-    die("%s of %d bytes to unmapped address %08x", write ? "store" : "load", size, a);
+    fault(write ? 7 : 5, a, "%s of %d bytes to unmapped address %08x", write ? "store" : "load", size, a);
 }
 
 static inline uint32_t load(uint32_t a, int size)
 {
     int region;
     uint8_t *p;
-    if (a & (size - 1)) die("misaligned %d-byte load from %08x", size, a);
+    if (a & (size - 1)) fault(4, a, "misaligned %d-byte load from %08x", size, a);
     p = mem_ptr(a, size, 0, &region);
     nload[region]++;
     if (timing) t_load(a);
     if (!p) {
-        if (size != 4) die("%d-byte load from I/O address %08x (word only)", size, a);
-        if ((a & 0x0fffffff) > 0xff) die("load from unmapped I/O address %08x", a);
-        return io_read(a & 0xff);
+        if (size != 4) fault(5, a, "%d-byte load from I/O address %08x (word only)", size, a);
+        return io_read(a & 0x0fffffff);
     }
     if (size == 4) { uint32_t v; memcpy(&v, p, 4); return v; }
     if (size == 2) { uint16_t v; memcpy(&v, p, 2); return v; }
@@ -487,7 +605,7 @@ static inline void store(uint32_t a, int size, uint32_t v)
 {
     int region;
     uint8_t *p;
-    if (a & (size - 1)) die("misaligned %d-byte store to %08x", size, a);
+    if (a & (size - 1)) fault(6, a, "misaligned %d-byte store to %08x", size, a);
     p = mem_ptr(a, size, 1, &region);
     nstore[region]++;
     if (timing) t_store(a);
@@ -496,9 +614,8 @@ static inline void store(uint32_t a, int size, uint32_t v)
         return;
     }
     if (!p) {
-        if (size != 4) die("%d-byte store to I/O address %08x (word only)", size, a);
-        if ((a & 0x0fffffff) > 0xff) die("store to unmapped I/O address %08x", a);
-        io_write(a & 0xff, v);
+        if (size != 4) fault(7, a, "%d-byte store to I/O address %08x (word only)", size, a);
+        io_write(a & 0x0fffffff, v);
         return;
     }
     if (size == 4) memcpy(p, &v, 4);
@@ -509,21 +626,91 @@ static inline void store(uint32_t a, int size, uint32_t v)
 static inline uint32_t fetch(uint32_t a)
 {
     uint32_t v;
-    if (a & 3) die("misaligned instruction fetch from %08x", a);
+    if (a & 3) fault(0, a, "misaligned instruction fetch from %08x", a);
     switch (a >> 28) {
     case 0x0: if (a < ROM_SIZE) { memcpy(&v, rom + a, 4); return v; } break;
     case 0x1: if ((a & 0x0fffffff) < SRAM_SIZE) { memcpy(&v, sram + (a & 0x0fffffff), 4); return v; } break;
-    case 0x2: if ((a & 0x0fffffff) < SDRAM_SIZE) { memcpy(&v, sdram + (a & 0x0fffffff), 4); return v; } break;
+    case 0x2: case 0x8: if ((a & 0x0fffffff) < SDRAM_SIZE) { memcpy(&v, sdram + (a & 0x0fffffff), 4); return v; } break;
     }
-    die("instruction fetch from non-executable/unmapped address %08x", a);
+    fault(1, a, "instruction fetch from non-executable/unmapped address %08x", a);
 }
 
 
 /* ---------------------------------------------------------------- CPU */
 
+static void take_trap(uint32_t cause, uint32_t tval)
+{
+    mepc = pc;
+    mcause = cause;
+    mtval = tval;
+    mstatus = (mstatus & ~0x1888u) | ((mstatus & 8) << 4) | ((uint32_t)priv << 11);
+    priv = 3;
+    lr_addr = 1;
+    pc = (mtvec & 1) && (cause >> 31) ? (mtvec & ~3u) + 4 * (cause & 0x1f) : mtvec & ~3u;
+}
+
+static uint64_t mtime_now(void) { return cycles() / (CLK_HZ / 1000000); }
+
+static uint32_t csr_read(uint32_t n, uint32_t ins)
+{
+    switch (n) {
+    case 0x300: return mstatus;
+    case 0x301: return 0x40101101;               /* RV32 I M A U */
+    case 0x304: return mie_r;
+    case 0x305: return mtvec;
+    case 0x340: return mscratch;
+    case 0x341: return mepc;
+    case 0x342: return mcause;
+    case 0x343: return mtval;
+    case 0x344: return mip_r;
+    case 0xf11: case 0xf12: case 0xf13: case 0xf14: return 0;
+    case 0xc00: case 0xb00: return (uint32_t)cycles();
+    case 0xc80: case 0xb80: return (uint32_t)(cycles() >> 32);
+    case 0xc01: return (uint32_t)mtime_now();
+    case 0xc81: return (uint32_t)(mtime_now() >> 32);
+    case 0xc02: case 0xb02: return (uint32_t)instret;
+    case 0xc82: case 0xb82: return (uint32_t)(instret >> 32);
+    }
+    {
+        static uint8_t warned[4096];
+        if (!quiet && !warned[n & 0xfff]++)
+            fprintf(stderr, "emu: unimplemented CSR %03x (reads 0) at pc=%08x, insn %08x\n", n, pc, ins);
+    }
+    return 0;
+}
+
+static void csr_write(uint32_t n, uint32_t v)
+{
+    switch (n) {
+    case 0x300: mstatus = v & 0x1888u; return;   /* MIE, MPIE, MPP */
+    case 0x304: mie_r = v & 0x888u; return;
+    case 0x305: mtvec = v; return;
+    case 0x340: mscratch = v; return;
+    case 0x341: mepc = v & ~3u; return;
+    case 0x342: mcause = v; return;
+    case 0x343: mtval = v; return;
+    case 0x344: return;                          /* MTIP/MSIP come from the CLINT */
+    }
+}
+
+static int run_inner(void);
 static int run(void)
 {
+    if (setjmp(trap_jb))
+        take_trap(trap_cause, trap_tval);
+    return run_inner();
+}
+
+static int run_inner(void)
+{
     for (;;) {
+        if (mtimecmp != ~0ull && (instret & 63) == 0) {
+            if (mtime_now() >= mtimecmp) mip_r |= 0x80; else mip_r &= ~0x80u;
+        }
+        if ((mip_r & mie_r & 0x88) && ((mstatus & 8) || priv < 3)) {
+            take_trap(mip_r & mie_r & 0x80 ? 0x80000007u : 0x80000003u, 0);
+            continue;
+        }
         uint32_t ins = fetch(pc);
         uint32_t op = ins & 0x7f;
         if (timing) {
@@ -655,21 +842,81 @@ static int run(void)
             break;
         case 0x0f: /* FENCE / FENCE.I: no-op */
             break;
+        case 0x2f: { /* A extension */
+            uint32_t f5 = ins >> 27, ea = a;
+            if (f3 != 2) goto illegal;
+            if (ea & 3) fault(6, ea, "misaligned AMO at %08x", ea);
+            if (f5 == 2) { val = load(ea, 4); lr_addr = ea; wr = 1; break; }       /* LR.W */
+            if (f5 == 3) {                                                          /* SC.W */
+                if (lr_addr == ea) { store(ea, 4, b); val = 0; } else val = 1;
+                lr_addr = 1; wr = 1; break;
+            }
+            val = load(ea, 4);
+            {
+                uint32_t nv;
+                switch (f5) {
+                case 0x01: nv = b; break;
+                case 0x00: nv = val + b; break;
+                case 0x04: nv = val ^ b; break;
+                case 0x0c: nv = val & b; break;
+                case 0x08: nv = val | b; break;
+                case 0x10: nv = (int32_t)val < (int32_t)b ? val : b; break;
+                case 0x14: nv = (int32_t)val > (int32_t)b ? val : b; break;
+                case 0x18: nv = val < b ? val : b; break;
+                case 0x1c: nv = val > b ? val : b; break;
+                default: goto illegal;
+                }
+                store(ea, 4, nv);
+            }
+            wr = 1;
+            break;
+        }
         case 0x73:
-            if (ins == 0x00100073) { /* EBREAK */
-                instret++;
-                fprintf(stderr, "emu: ebreak at pc=%08x\n", pc);
-                return 1;
+            if (f3 == 0) {
+                if (ins == 0x00100073) { /* EBREAK */
+                    if (mtvec) fault(3, pc, "ebreak");
+                    instret++;
+                    fprintf(stderr, "emu: ebreak at pc=%08x\n", pc);
+                    return 1;
+                }
+                if (ins == 0x00000073) { /* ECALL */
+                    if (mtvec) fault(priv == 3 ? 11 : 8, 0, "ecall");
+                    instret++;
+                    fprintf(stderr, "emu: ecall at pc=%08x (a7=%u a0=%u)\n", pc, x[17], x[10]);
+                    return 1;
+                }
+                if (ins == 0x30200073) { /* MRET */
+                    priv = (mstatus >> 11) & 3;
+                    if (priv != 3) priv = 0;
+                    mstatus = (mstatus & ~0x1888u) | ((mstatus >> 4) & 8) | 0x80;
+                    npc = mepc;
+                    break;
+                }
+                if (ins == 0x10500073) { /* WFI: skip ahead to the timer */
+                    if (!(mip_r & mie_r & 0x88) && (mie_r & 0x80) && mtimecmp != ~0ull) {
+                        uint64_t now = mtime_now();
+                        if (mtimecmp > now) idle_cycles += (mtimecmp - now) * (CLK_HZ / 1000000);
+                    }
+                    break;
+                }
+                goto illegal;
             }
-            if (ins == 0x00000073) { /* ECALL */
-                instret++;
-                fprintf(stderr, "emu: ecall at pc=%08x (a7=%u a0=%u)\n", pc, x[17], x[10]);
-                return 1;
+            if (f3 == 4) goto illegal;
+            {
+                uint32_t csr = ins >> 20, src = (f3 & 4) ? rs1 : a, old = csr_read(csr, ins), nv;
+                switch (f3 & 3) {
+                case 1: nv = src; break;
+                case 2: nv = old | src; break;
+                default: nv = old & ~src; break;
+                }
+                if ((f3 & 3) == 1 || rs1 != 0) csr_write(csr, nv);
+                val = old;
+                wr = 1;
             }
-            goto illegal;
+            break;
         default:
         illegal:
-            die("illegal or unsupported instruction %08x", ins);
+            fault(2, ins, "illegal or unsupported instruction %08x", ins);
         }
 
         if (wr && rd) {
@@ -702,6 +949,9 @@ static void stats(void)
     fflush(stdout);
     fprintf(stderr, "\n--- emu stats ---\n");
     fprintf(stderr, "instructions retired: %llu\n", (unsigned long long)instret);
+    if (kernel_path)
+        fprintf(stderr, "pc %08x priv %d mstatus %08x mcause %08x mepc %08x mtval %08x mie %03x mip %03x\n",
+                pc, priv, mstatus, mcause, mepc, mtval, mie_r, mip_r);
     fprintf(stderr, "cycles (cpi %.2f):    %llu (%.3f s at 50 MHz)\n", cpi,
             (unsigned long long)cycles(), secs);
     fprintf(stderr, "vga frames:           %llu\n", (unsigned long long)frame_count());
@@ -764,6 +1014,9 @@ static void usage(void)
 "  --switches N       value of SW[9:0] (0x200 = SW9, JTAG flash loader)\n"
 "  --jtag FILE        JTAG loader stream (tools/jtag_stream.py) for SW9 mode\n"
 "  --flash none       start with an erased flash\n"
+"  --kernel FILE      boot a Linux Image at 0x80000000 (SDRAM alias) instead of the boot ROM\n"
+"  --dtb FILE         device tree for --kernel, placed in the top 16 KB of SDRAM\n"
+"  --sdram-mb N       SDRAM size (default 8, the DE1's; larger is emulator only)\n"
 "  --flash-out FILE   write the flash contents here on exit\n"
 "  --log-flips        print instret and VGA frame number on every page flip\n"
 "  --quiet            fewer messages\n");
@@ -798,6 +1051,9 @@ int main(int argc, char **argv)
         else if (!strcmp(o, "--trace-count")) trace_count = strtoull(ARG, NULL, 0);
         else if (!strcmp(o, "--switches")) switches = strtoul(ARG, NULL, 0);
         else if (!strcmp(o, "--jtag")) jtag_path = ARG;
+        else if (!strcmp(o, "--kernel")) kernel_path = ARG;
+        else if (!strcmp(o, "--dtb")) dtb_path = ARG;
+        else if (!strcmp(o, "--sdram-mb")) sdram_size_v = (uint32_t)atoi(ARG) << 20;
         else if (!strcmp(o, "--flash-out")) flash_out = ARG;
         else if (!strcmp(o, "--quiet")) quiet = 1;
         else if (!strcmp(o, "--log-flips")) log_flips = 1;
@@ -830,7 +1086,19 @@ int main(int argc, char **argv)
     }
 
     pc = 0;
+    if (kernel_path) {
+        /* Linux: kernel at the start of SDRAM (seen at 0x80000000), the
+           device tree in the top 16 KB, which it leaves out of its memory */
+        load_file(kernel_path, sdram, SDRAM_SIZE - 0x4000, "kernel");
+        if (!dtb_path) { fprintf(stderr, "emu: --kernel needs --dtb\n"); exit(1); }
+        load_file(dtb_path, sdram + SDRAM_SIZE - 0x4000, 0x4000, "device tree");
+        pc = 0x80000000u;
+        x[10] = 0;
+        x[11] = 0x80000000u + SDRAM_SIZE - 0x4000;
+    }
     rc = run();
+    if (poweroff_requested && !quiet)
+        fprintf(stderr, "emu: %s requested\n", poweroff_requested == 0x5555 ? "poweroff" : "reboot");
     if (trace_f) fclose(trace_f);
     if (flash_out) {
         FILE *f = fopen(flash_out, "wb");

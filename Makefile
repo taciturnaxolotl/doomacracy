@@ -198,7 +198,8 @@ VJTAG := sim/vjtag_port_sim.vhd
 NVCW  := $(NVC) --std=1993 --work=work:$(BUILD)/work -M 512m -H 1g
 RTL   := $(VJTAG) rtl/boot_rom_data.vhd rtl/sdpram.vhd rtl/cpu.vhd rtl/icache.vhd rtl/dcache.vhd \
          rtl/membus.vhd rtl/boot_rom.vhd rtl/sram_ctrl.vhd rtl/sdram_ctrl.vhd rtl/flash_ctrl.vhd \
-         rtl/io.vhd rtl/video.vhd rtl/uart.vhd rtl/ps2_rx.vhd rtl/jtag_rx.vhd rtl/doomacracy.vhd
+         rtl/io.vhd rtl/video.vhd rtl/uart.vhd rtl/ps2_rx.vhd rtl/jtag_console.vhd rtl/jtag_rx.vhd \
+         rtl/doomacracy.vhd
 QRTL  := $(RTL:sim/vjtag_port_sim.vhd=rtl/vjtag_port.vhd)
 SIM   := sim/models.vhd sim/tb_soc.vhd sim/tb_cpu.vhd
 SOCT  := sim/soctest
@@ -246,10 +247,122 @@ PPM2PNG_SIM = cd sim/out && for f in *.ppm; do [ -f "$$f" ] && $(MAGICK) $$f $${
 
 # Quartus archive: everything flat in one folder, the way the lab's projects
 # are. Builds the real boot ROM first so the archive never carries a test one.
-QAR_FILES := doomacracy.qpf doomacracy.qsf doomacracy.sdc $(notdir $(QRTL)) jtag_flash.tcl flash.bin
+QAR_FILES := doomacracy.qpf doomacracy.qsf doomacracy.sdc $(notdir $(QRTL)) jtag_flash.tcl jtag_console.tcl flash.bin linux-flash.bin
 .PHONY: qar
-qar: rom $(BUILD)/flash.bin
+qar: rom $(BUILD)/flash.bin $(BUILD)/linux-flash.bin
 	@rm -rf $(BUILD)/qar && mkdir -p $(BUILD)/qar
-	cp quartus/doomacracy.qpf quartus/doomacracy.sdc $(QRTL) tools/jtag_flash.tcl $(BUILD)/flash.bin $(BUILD)/qar/
+	cp quartus/doomacracy.qpf quartus/doomacracy.sdc $(QRTL) tools/jtag_flash.tcl tools/jtag_console.tcl $(BUILD)/flash.bin $(BUILD)/linux-flash.bin $(BUILD)/qar/
 	sed 's|\.\./rtl/||' quartus/doomacracy.qsf > $(BUILD)/qar/doomacracy.qsf
 	$(PYTHON) tools/qar.py pack $(BUILD)/doomacracy.qar $(BUILD)/qar $(QAR_FILES)
+
+# ---------------------------------------------------------------- Linux platform
+#
+#   make trap-test     sim/traptest (CSRs, traps, U-mode, AMOs, fence.i,
+#                      CLINT timer, 16550) in the emulator and in nvc: the
+#                      console output must be identical and the traces agree
+#   make linux-sim     boot LINUX_IMAGE in nvc from preloaded SDRAM, console
+#                      over the simulated JTAG, trace compared with the emulator
+#   make reboot-test   syscon reboot then power off, in nvc
+#   make console-dry   tools/jtag_console.tcl against its fake board (tclsh)
+#
+# Both simulations use sim/linuxboot as the boot ROM (a0 = 0, a1 = DTB, jump
+# to 0x80000000, like emu --kernel) and a device tree for 8 MB, made with
+# dtc (nix shell nixpkgs#dtc). Run `make rom` before Quartus.
+
+# the device tree for the DE1's 8 MB, at 8 MB - 16 KB; LINUX_MS is simulated time
+RTL_DTB    := $(BUILD)/rtl-8mb.dtb
+DTB_AT     := 8372224
+LINUX_MS   ?= 300
+LINUX_TRACE_N ?= 3000000
+# typed into the trap test's console after "ok": longer than the RX FIFO
+TRAP_LINE  := Thequickbrownfoxjumpsoverthelazydog0123456789
+SIM_UART   = grep -v '^\[tb\]\|^\[jtag\]\|^\*\*\|^   ' $(1)
+SIM_JTAG   = sed -n 's/^\[jtag\] //p' $(1)
+
+.PHONY: trap-test linux-sim console-dry linuxboot-rom reboot-test
+$(RTL_DTB): tools/gen_dts.py
+	@mkdir -p $(BUILD)
+	$(PYTHON) tools/gen_dts.py 8 > $(BUILD)/rtl-8mb.dts
+	dtc -q -I dts -O dtb -o $@ $(BUILD)/rtl-8mb.dts
+
+linuxboot-rom:
+	$(MAKE) -C sim/linuxboot
+	$(PYTHON) tools/gen_rom.py sim/linuxboot/stub_rom.txt rtl/boot_rom_data.vhd
+
+trap-test: emu linuxboot-rom $(RTL_DTB)
+	@mkdir -p sim/out
+	$(MAKE) -C sim/traptest
+	printf 'ok\r$(TRAP_LINE)\r' | $(BUILD)/emu --kernel sim/traptest/traptest.bin --dtb $(RTL_DTB) --sdram-mb 8 \
+	    --trace $(BUILD)/trap_emu_trace.txt --trace-count 10000000 --quiet > $(BUILD)/trap_emu_out.txt
+	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=none -gSDRAM_IMG0=sim/traptest/traptest.bin \
+	    -gSDRAM_IMG1=$(RTL_DTB) -gSDRAM_IMG1_AT=$(DTB_AT) -gCON_POLL_US=20 -gCON_IN=ok~$(TRAP_LINE)~ \
+	    -gTRACE=$(BUILD)/trap_rtl_trace.txt -gTRACE_MAX=10000000 -gMAX_MS=40 -gDUMP_FIRST=100000 \
+	    -r > $(BUILD)/trap_rtl_log.txt
+	$(call SIM_UART,$(BUILD)/trap_rtl_log.txt) > $(BUILD)/trap_rtl_uart.txt
+	$(call SIM_JTAG,$(BUILD)/trap_rtl_log.txt) > $(BUILD)/trap_rtl_jtag.txt
+	diff $(BUILD)/trap_emu_out.txt $(BUILD)/trap_rtl_uart.txt && echo "trap-test: RS-232 output matches the emulator"
+	diff $(BUILD)/trap_emu_out.txt $(BUILD)/trap_rtl_jtag.txt && echo "trap-test: JTAG console output matches the emulator"
+	$(PYTHON) tools/cmptrace.py $(BUILD)/trap_emu_trace.txt $(BUILD)/trap_rtl_trace.txt --quiet
+
+linux-sim: emu linuxboot-rom $(RTL_DTB)
+	@mkdir -p sim/out
+	$(BUILD)/emu --kernel $(LINUX_IMAGE) --dtb $(RTL_DTB) --sdram-mb 8 --trace $(BUILD)/linux_emu_trace.txt \
+	    --trace-count $(LINUX_TRACE_N) --max-instr $(LINUX_TRACE_N) --quiet < /dev/null > $(BUILD)/linux_emu_out.txt
+	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=none -gSDRAM_IMG0=$(LINUX_IMAGE) \
+	    -gSDRAM_IMG1=$(RTL_DTB) -gSDRAM_IMG1_AT=$(DTB_AT) -gCON_POLL_US=5 \
+	    -gTRACE=$(BUILD)/linux_rtl_trace.txt -gTRACE_MAX=$(LINUX_TRACE_N) -gMAX_MS=$(LINUX_MS) \
+	    -gDUMP_FIRST=100000000 -r > $(BUILD)/linux_rtl_log.txt
+	$(call SIM_UART,$(BUILD)/linux_rtl_log.txt) > $(BUILD)/linux_rtl_uart.txt
+	$(call SIM_JTAG,$(BUILD)/linux_rtl_log.txt) > $(BUILD)/linux_rtl_jtag.txt
+	@echo "--- console (RS-232 mirror) ---"; cat $(BUILD)/linux_rtl_uart.txt
+	diff $(BUILD)/linux_rtl_uart.txt $(BUILD)/linux_rtl_jtag.txt && echo "linux-sim: JTAG console and RS-232 agree"
+	@# whole lines the emulator printed in its LINUX_TRACE_N instructions, timestamps stripped
+	tr -d '\r' < $(BUILD)/linux_emu_out.txt | sed 's/^\[ *[0-9.]*\] //' > $(BUILD)/linux_emu_text.txt
+	sed 's/^\[ *[0-9.]*\] //' $(BUILD)/linux_rtl_uart.txt > $(BUILD)/linux_rtl_text.txt
+	n=$$(wc -l < $(BUILD)/linux_emu_text.txt); \
+	    head -n $$n $(BUILD)/linux_emu_text.txt > $(BUILD)/linux_emu_head.txt; \
+	    head -n $$n $(BUILD)/linux_rtl_text.txt > $(BUILD)/linux_rtl_head.txt
+	diff $(BUILD)/linux_emu_head.txt $(BUILD)/linux_rtl_head.txt \
+	    && echo "linux-sim: console text matches the emulator (timestamps aside)"
+	$(PYTHON) tools/cmptrace.py $(BUILD)/linux_emu_trace.txt $(BUILD)/linux_rtl_trace.txt --window 100000 --quiet
+
+# syscon: a reboot (0x7777) resets the whole board and leaves SDRAM alone,
+# a power off (0x5555) halts the CPU
+reboot-test: linuxboot-rom $(RTL_DTB)
+	$(MAKE) -C sim/traptest reboot.bin
+	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=none -gSDRAM_IMG0=sim/traptest/reboot.bin \
+	    -gMAX_MS=10 -gDUMP_FIRST=100000 -r > $(BUILD)/reboot_log.txt
+	$(call SIM_UART,$(BUILD)/reboot_log.txt) > $(BUILD)/reboot_out.txt
+	printf 'boot 1\nboot 2\n' | diff - $(BUILD)/reboot_out.txt
+	grep -q 'CPU halted' $(BUILD)/reboot_log.txt
+	@echo "reboot-test: rebooted once, then powered off"
+
+console-dry:
+	printf 'Linux says hi\r\nsecond line\r\n' > $(BUILD)/console_fake.txt
+	printf 'ls -l\nuname\n' | DOOMACRACY_JTAG_DRYRUN=$(BUILD)/console_dry.txt \
+	    DOOMACRACY_JTAG_FAKE_OUT=$(BUILD)/console_fake.txt tclsh tools/jtag_console.tcl > $(BUILD)/console_out.txt
+	cmp $(BUILD)/console_fake.txt $(BUILD)/console_out.txt
+	grep -q '^80 6e750d6c2d20736c0018$$' $(BUILD)/console_dry.txt
+	grep -q '^80 000000000d656d610014$$' $(BUILD)/console_dry.txt
+	@echo "console-dry: frames and output as expected"
+
+# ======================================================================
+# Linux (emulator only for now)
+# ======================================================================
+#   make linux-emu        boot LINUX_IMAGE in the emulator, console on this terminal
+#   make linux-emu MB=64  more memory than the board has (emulator only)
+LINUX_IMAGE ?= $(BUILD)/linux-Image
+MB ?= 8
+.PHONY: linux-emu
+$(BUILD)/doomacracy-$(MB)mb.dtb: tools/gen_dts.py
+	@mkdir -p $(BUILD)
+	$(PYTHON) tools/gen_dts.py $(MB) > $(BUILD)/doomacracy-$(MB)mb.dts
+	dtc -q -I dts -O dtb -o $@ $(BUILD)/doomacracy-$(MB)mb.dts
+linux-emu: emu $(BUILD)/doomacracy-$(MB)mb.dtb
+	$(BUILD)/emu --kernel $(LINUX_IMAGE) --dtb $(BUILD)/doomacracy-$(MB)mb.dtb --sdram-mb $(MB)
+
+# Linux flash image (kernel + device tree), written with jtag_flash.tcl like flash.bin
+$(BUILD)/linux-flash.bin: $(LINUX_IMAGE) $(BUILD)/doomacracy-8mb.dtb tools/mklinuxflash.py
+	$(PYTHON) tools/mklinuxflash.py $(LINUX_IMAGE) $(BUILD)/doomacracy-8mb.dtb $@
+.PHONY: linux-flash
+linux-flash: $(BUILD)/linux-flash.bin

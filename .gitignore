@@ -8,3 +8,13 @@ sim/cputest/*.bin
 sim/cputest/torture_host
 sim/soctest/*.elf
 sim/soctest/*.bin
+linux/work/
+linux/br-fhs
+sim/traptest/*.elf
+sim/traptest/*.bin
+sim/linuxboot/*.elf
+sim/linuxboot/*.bin
+sim/linuxboot/stub_rom.txt
+sim/jtagtest/*.elf
+sim/jtagtest/*.bin
+sim/jtagtest/*.hex

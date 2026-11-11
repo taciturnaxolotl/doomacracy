@@ -1,6 +1,7 @@
 -- Memory bus: two masters (instruction fill, data cache) onto five slaves
--- picked by address bits 31..28. The data side wins a tie. A transaction is
--- one ack, or four for a burst; the owner keeps the bus until the last one.
+-- picked by address bits 31..28 (0x8 is the SDRAM again, for Linux). The
+-- data side wins a tie. A transaction is one ack, or four for a burst; the
+-- owner keeps the bus until the last one.
 --
 -- Slave protocol: req is held steady for the whole transaction; the slave
 -- pulses ack once per word, never in the same cycle req first appears.
@@ -76,7 +77,7 @@ begin
     region <= addr(31 downto 28);
     rom_req   <= req when region = x"0" else '0';
     sram_req  <= req when region = x"1" else '0';
-    sdram_req <= req when region = x"2" else '0';
+    sdram_req <= req when region = x"2" or region = x"8" else '0';   -- 0x8: alias
     flash_req <= req when region = x"3" else '0';
     io_req    <= req when region = x"F" else '0';
 
@@ -86,7 +87,7 @@ begin
         case region is
             when x"0"   => ack <= rom_ack;   rdata <= rom_rdata;
             when x"1"   => ack <= sram_ack;  rdata <= sram_rdata;
-            when x"2"   => ack <= sdram_ack; rdata <= sdram_rdata;
+            when x"2" | x"8" => ack <= sdram_ack; rdata <= sdram_rdata;
             when x"3"   => ack <= flash_ack; rdata <= flash_rdata;
             when x"F"   => ack <= io_ack;    rdata <= io_rdata;
             when others => ack <= bad_ack;   rdata <= (others => '0');
@@ -102,7 +103,7 @@ begin
         if rising_edge(clk) then
             -- unmapped addresses answer with zeros so nothing hangs
             bad_ack <= '0';
-            if req = '1' and region /= x"0" and region /= x"1" and region /= x"2"
+            if req = '1' and region /= x"0" and region /= x"1" and region /= x"2" and region /= x"8"
                and region /= x"3" and region /= x"F" and bad_ack = '0' then
                 bad_ack <= '1';
             end if;

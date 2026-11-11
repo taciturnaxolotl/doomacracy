@@ -35,6 +35,7 @@ set_global_assignment -name VHDL_FILE ../rtl/video.vhd
 set_global_assignment -name VHDL_FILE ../rtl/uart.vhd
 set_global_assignment -name VHDL_FILE ../rtl/ps2_rx.vhd
 set_global_assignment -name VHDL_FILE ../rtl/vjtag_port.vhd
+set_global_assignment -name VHDL_FILE ../rtl/jtag_console.vhd
 set_global_assignment -name VHDL_FILE ../rtl/jtag_rx.vhd
 set_global_assignment -name VHDL_FILE ../rtl/doomacracy.vhd
 set_location_assignment PIN_L22 -to SW[0]

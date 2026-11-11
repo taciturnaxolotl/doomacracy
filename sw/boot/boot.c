@@ -188,6 +188,16 @@ static NOINLINE void jtag_load(void)
     LEDR = 0;
 }
 
+static NOINLINE void copy_words(uint32_t *dst, uint32_t flash_off, uint32_t bytes)
+{
+    volatile uint32_t *src = (volatile uint32_t *)(FLASH_BASE + flash_off);
+    for (uint32_t i = 0; i < (bytes + 3) >> 2; i++) {
+        dst[i] = src[i];
+        if ((i & 0x3fff) == 0)
+            LEDR = i >> 14;
+    }
+}
+
 void __attribute__((noreturn)) boot_main(void)
 {
     volatile flash_header_t *h = FLASH_HEADER;
@@ -201,6 +211,22 @@ void __attribute__((noreturn)) boot_main(void)
         jtag_load();
 
     magic = h->magic;
+    if (magic == LINUX_MAGIC) {
+        volatile uint32_t *hw = (volatile uint32_t *)FLASH_BASE;
+        uint32_t klen = hw[1], doff = hw[2], dlen = hw[3];
+        if (klen > LINUX_DTB_AT - SDRAM_BASE || dlen > 0x4000)
+            fail(5, klen);
+        puts_imm("boot: linux\r\n");
+        HEX = 0xB104;
+        copy_words((uint32_t *)SDRAM_BASE, FLASH_FW_OFFSET, klen);
+        copy_words((uint32_t *)LINUX_DTB_AT, doff, dlen);
+        HEX = 0xB105;
+        {
+            register uint32_t a0 __asm__("a0") = 0;
+            register uint32_t a1 __asm__("a1") = LINUX_DTB_AT - SDRAM_BASE + LINUX_ENTRY;
+            __asm__ volatile("jr %2" :: "r"(a0), "r"(a1), "r"(LINUX_ENTRY));
+        }
+    }
     if (magic != FLASH_MAGIC) {
         puts_imm("boot: bad flash magic ");
         puthex(magic);

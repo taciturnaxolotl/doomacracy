@@ -9,6 +9,7 @@ use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
 use std.textio.all;
 use ieee.std_logic_textio.all;
+use work.vjtag_sim_cfg.all;
 
 entity tb_soc is
     generic (
@@ -22,7 +23,16 @@ entity tb_soc is
         UART_DIV   : integer := 16;
         SWITCHES   : integer := 0;          -- SW9 (512) selects the JTAG loader
         TRACE      : string  := "";
-        TRACE_MAX  : integer := 0
+        TRACE_MAX  : integer := 0;
+        -- SDRAM preload (raw binaries at byte offsets), e.g. a kernel and DTB
+        SDRAM_IMG0    : string  := "";
+        SDRAM_IMG0_AT : natural := 0;
+        SDRAM_IMG1    : string  := "";
+        SDRAM_IMG1_AT : natural := 0;
+        -- JTAG console host (sim/vjtag_port_sim.vhd): poll period, 0 = off,
+        -- and text to type ('~' = carriage return)
+        CON_POLL_US : integer := 0;
+        CON_IN      : string  := ""
     );
 end tb_soc;
 
@@ -74,6 +84,7 @@ begin
         port map (SRAM_ADDR, SRAM_DQ, SRAM_WE_N, SRAM_OE_N, SRAM_UB_N, SRAM_LB_N, SRAM_CE_N);
 
     sdram_chip : entity work.sdram_model
+        generic map (SDRAM_IMG0, SDRAM_IMG0_AT, SDRAM_IMG1, SDRAM_IMG1_AT)
         port map (DRAM_CLK, DRAM_ADDR, dram_ba, DRAM_DQ, dram_dqm,
                   DRAM_RAS_N, DRAM_CAS_N, DRAM_WE_N, DRAM_CS_N, DRAM_CKE);
 
@@ -83,6 +94,17 @@ begin
     flash_chip : entity work.flash_model
         generic map (FLASH)
         port map (FL_ADDR, FL_DQ, FL_OE_N, FL_WE_N, FL_CE_N);
+
+    -- JTAG console host settings
+    process
+    begin
+        con_poll <= CON_POLL_US * 1 us;
+        if CON_IN'length > 0 then
+            con_input(1 to CON_IN'length) <= CON_IN;
+        end if;
+        con_input_len <= CON_IN'length;
+        wait;
+    end process;
 
     -- UART receiver
     process
@@ -240,6 +262,7 @@ begin
             writeline(output, l);
         end if;
         done <= true;
+        sim_done <= true;
         wait;
     end process;
 end sim;

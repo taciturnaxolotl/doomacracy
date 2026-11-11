@@ -2,6 +2,7 @@
 -- 32 bits (LSB first) become one word, which crosses into the system clock
 -- through a toggle handshake and lands in a 16-word FIFO the CPU drains
 -- through the I/O registers. IR = 2 reads back {overflow, words received}.
+-- IR = 3 is the console (rtl/jtag_console.vhd), on the same instance.
 --
 -- The handshake is safe because the next word takes 32 TCK cycles to
 -- arrive, far longer than the 3-cycle synchroniser at 50 MHz.
@@ -16,12 +17,20 @@ entity jtag_rx is
         pop      : in  std_logic;
         avail    : out std_logic;
         data     : out std_logic_vector(31 downto 0);
-        overflow : out std_logic
+        overflow : out std_logic;
+        -- console (IR = 3)
+        con_tx_we    : in  std_logic;
+        con_tx_data  : in  std_logic_vector(7 downto 0);
+        con_tx_full  : out std_logic;
+        con_rx_avail : out std_logic;
+        con_rx_data  : out std_logic_vector(7 downto 0);
+        con_rx_pop   : in  std_logic;
+        con_attached : out std_logic
     );
 end jtag_rx;
 
 architecture rtl of jtag_rx is
-    signal tck, tdi, tdo, cdr, sdr : std_logic;
+    signal tck, tdi, tdo, cdr, sdr, con_tdo : std_logic;
     signal ir : std_logic_vector(1 downto 0);
 
     -- TCK domain
@@ -43,7 +52,12 @@ architecture rtl of jtag_rx is
 begin
     port0 : entity work.vjtag_port port map (tck, tdi, tdo, ir, cdr, sdr);
 
-    tdo <= sr(0);
+    tdo <= con_tdo when ir = "11" else sr(0);
+
+    con : entity work.jtag_console
+        port map (clk, tck, tdi, ir, cdr, sdr, con_tdo,
+                  con_tx_we, con_tx_data, con_tx_full, con_rx_avail, con_rx_data, con_rx_pop,
+                  con_attached);
 
     process (tck)
         variable nxt : std_logic_vector(31 downto 0);
