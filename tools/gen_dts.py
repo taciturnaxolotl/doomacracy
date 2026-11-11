@@ -18,7 +18,7 @@ print(f"""/dts-v1/;
 	model = "doomacracy (Terasic DE1, RV32IMA)";
 
 	chosen {{
-		bootargs = "earlycon=uart8250,mmio32,0xf0001000 console=tty0 console=ttyS0";
+		bootargs = "earlycon=uart8250,mmio32,0xf0001000 console=tty0 console=ttyS0 atkbd.dumbkbd=1";
 		stdout-path = &uart0;
 	}};
 
@@ -63,6 +63,25 @@ print(f"""/dts-v1/;
 			height = <200>;
 			stride = <640>;
 			format = "r5g6b5";
+		}};
+
+		/* PLIC with a single source, driving the CPU's MEIP (11) */
+		plic: interrupt-controller@f4000000 {{
+			compatible = "sifive,plic-1.0.0";
+			#address-cells = <0>;
+			#interrupt-cells = <1>;
+			interrupt-controller;
+			reg = <0xf4000000 0x400000>;
+			interrupts-extended = <&cpu0_intc 11>;
+			riscv,ndev = <1>;
+		}};
+
+		/* receive-only PS/2 keyboard, register layout of Altera's PS/2 core */
+		ps2@f0003000 {{
+			compatible = "altr,ps2-1.0";
+			reg = <0xf0003000 0x8>;
+			interrupt-parent = <&plic>;
+			interrupts = <1>;
 		}};
 
 		uart0: serial@f0001000 {{

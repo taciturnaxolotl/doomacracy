@@ -108,7 +108,7 @@ architecture rtl of doomacracy is
     signal jt_data : std_logic_vector(31 downto 0);
     signal con_tx_we, con_tx_full, con_rx_avail, con_rx_pop, con_attached : std_logic;
     signal con_tx_data, con_rx_data : std_logic_vector(7 downto 0);
-    signal ci_inval, mtip, msip, poweroff, reboot : std_logic;
+    signal ci_inval, mtip, msip, meip, poweroff, reboot : std_logic;
     signal mtime : std_logic_vector(63 downto 0);
 
     function seg7(d : std_logic_vector(3 downto 0)) return std_logic_vector is
@@ -159,7 +159,7 @@ begin
         generic map (TRACE => TRACE, TRACE_MAX => TRACE_MAX)
         port map (clk, cpu_reset, ci_prime, ci_raddr, ci_req, ci_addr, ci_ack, ci_rdata,
                   cd_prime, cd_raddr, cd_req, cd_addr, cd_we, cd_wstrb, cd_wdata, cd_ack, cd_rdata,
-                  ci_inval, mtip, msip, mtime, poweroff,
+                  ci_inval, mtip, msip, meip, mtime, poweroff,
                   halted, retire, retire_pc, retire_rd, retire_data);
 
     ic : entity work.icache
@@ -211,7 +211,7 @@ begin
                   SW, KEY, ledr_io, LEDG, hex, fb_base, mode16, vblank, pal_we, pal_idx, pal_rgb,
                   jt_avail, jt_data, jt_ovf, jt_pop,
                   con_tx_we, con_tx_data, con_tx_full, con_rx_avail, con_rx_data, con_rx_pop, con_attached,
-                  mtime, mtip, msip, poweroff, reboot);
+                  mtime, mtip, msip, meip, poweroff, reboot);
 
     jtag : entity work.jtag_rx
         port map (clk, reset, jt_pop, jt_avail, jt_data, jt_ovf,

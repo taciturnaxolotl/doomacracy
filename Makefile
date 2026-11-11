@@ -289,6 +289,20 @@ linuxboot-rom:
 	$(MAKE) -C sim/linuxboot
 	$(PYTHON) tools/gen_rom.py sim/linuxboot/stub_rom.txt rtl/boot_rom_data.vhd
 
+# PS/2 bytes through the PLIC as interrupts: the emulator and the RTL must
+# print the same bytes
+.PHONY: ps2-test
+ps2-test: emu linuxboot-rom $(RTL_DTB)
+	@mkdir -p sim/out
+	$(MAKE) -C sim/ps2test
+	$(BUILD)/emu --kernel sim/ps2test/ps2test.bin --dtb $(RTL_DTB) --sdram-mb 8 --keys sim/ps2test/keys.txt \
+	    --quiet < /dev/null 2>/dev/null > $(BUILD)/ps2_emu_out.txt
+	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=none -gSDRAM_IMG0=sim/ps2test/ps2test.bin \
+	    -gSDRAM_IMG1=$(RTL_DTB) -gSDRAM_IMG1_AT=$(DTB_AT) -gKEYS=sim/ps2test/keys.txt \
+	    -gMAX_MS=120 -gDUMP_FIRST=100000 -r > $(BUILD)/ps2_rtl_log.txt
+	$(call SIM_UART,$(BUILD)/ps2_rtl_log.txt) > $(BUILD)/ps2_rtl_uart.txt
+	diff $(BUILD)/ps2_emu_out.txt $(BUILD)/ps2_rtl_uart.txt && echo "ps2-test: RTL matches the emulator"
+
 trap-test: emu linuxboot-rom $(RTL_DTB)
 	@mkdir -p sim/out
 	$(MAKE) -C sim/traptest

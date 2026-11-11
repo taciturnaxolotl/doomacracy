@@ -63,6 +63,7 @@ entity io is
         mtime         : out std_logic_vector(63 downto 0);
         mtip          : out std_logic;
         msip          : out std_logic;
+        ps2_irq       : out std_logic;   -- mip.MEIP, from the PLIC
         poweroff      : out std_logic;
         reboot        : out std_logic
     );
@@ -97,12 +98,22 @@ architecture rtl of io is
     -- CLINT
     signal mtimecmp : unsigned(63 downto 0) := (others => '1');
     signal msip_r   : std_logic := '0';
+    signal ps2_ie   : std_logic := '0';
+    signal ps2_lvl, plic_pend, plic_irq : std_logic;
+    signal plic_prio, plic_thr : unsigned(2 downto 0) := (others => '0');
+    signal plic_en, plic_claimed : std_logic := '0';
     signal mtip_r   : std_logic := '0';
     signal off_r    : std_logic := '0';
 begin
     mtime    <= std_logic_vector(us);
     mtip     <= mtip_r;
     msip     <= msip_r;
+    -- PLIC with one source (1 = PS/2, level: RE set and a byte waiting).
+    -- A claim hides the source until it is completed, like a PLIC gateway.
+    ps2_lvl  <= '1' when ps2_ie = '1' and k_count /= 0 else '0';
+    plic_pend <= ps2_lvl and not plic_claimed;
+    plic_irq  <= '1' when plic_pend = '1' and plic_en = '1' and plic_prio > plic_thr else '0';
+    ps2_irq  <= plic_irq;
     poweroff <= off_r;
     u_thre   <= uart_tx_ready and (not con_attached or not con_tx_full);
     u_dr     <= con_rx_avail or rx_full;
@@ -121,7 +132,7 @@ begin
     process (clk)
         variable pop_k, push_k : boolean;
         variable off : std_logic_vector(7 downto 0);
-        variable sel_regs, sel_uart, sel_sysc, sel_clint : boolean;
+        variable sel_regs, sel_uart, sel_sysc, sel_clint, sel_ps2, sel_plic : boolean;
         variable ur  : std_logic_vector(2 downto 0);
         variable co  : std_logic_vector(15 downto 0);
     begin
@@ -157,6 +168,10 @@ begin
             sel_uart  := unsigned(addr(27 downto 5)) = 16#80#;
             sel_sysc  := unsigned(addr(27 downto 0)) = 16#2000#;
             sel_clint := unsigned(addr(27 downto 16)) = 16#100#;
+            -- 0xF000_3000: the same keyboard FIFO laid out like Altera's
+            -- University Program PS/2 core, for Linux's altera_ps2 driver
+            sel_ps2   := unsigned(addr(27 downto 3)) = 16#600#;
+            sel_plic  := unsigned(addr(27 downto 22)) = 16;   -- 0xF400_0000
             ur := addr(4 downto 2);
             co := addr(15 downto 0);
             if req = '1' and ack_r = '0' then
@@ -188,6 +203,19 @@ begin
                             elsif wdata = x"00007777" then
                                 reboot <= '1';
                             end if;
+                        elsif sel_plic then
+                            case addr(21 downto 0) is
+                                when "00" & x"00004" => plic_prio <= unsigned(wdata(2 downto 0));
+                                when "00" & x"02000" => plic_en   <= wdata(1);
+                                when "10" & x"00000" => plic_thr  <= unsigned(wdata(2 downto 0));
+                                when "10" & x"00004" =>             -- complete
+                                    if wdata(4 downto 0) = "00001" then plic_claimed <= '0'; end if;
+                                when others => null;
+                            end case;
+                        elsif sel_ps2 then
+                            if addr(2) = '1' then
+                                ps2_ie <= wdata(0);            -- control: RE
+                            end if;                            -- data writes: no transmitter
                         elsif sel_clint then
                             case co is
                                 when x"0000" => msip_r <= wdata(0);
@@ -230,6 +258,31 @@ begin
                                     when "110" => rdata_r(7 downto 0) <= x"B0";   -- MSR: DCD DSR CTS
                                     when others => rdata_r(7 downto 0) <= u_scr;
                                 end case;
+                            end if;
+                        elsif sel_plic then
+                            case addr(21 downto 0) is
+                                when "00" & x"00004" => rdata_r(2 downto 0) <= std_logic_vector(plic_prio);
+                                when "00" & x"01000" => rdata_r(1) <= plic_pend;
+                                when "00" & x"02000" => rdata_r(1) <= plic_en;
+                                when "10" & x"00000" => rdata_r(2 downto 0) <= std_logic_vector(plic_thr);
+                                when "10" & x"00004" =>             -- claim
+                                    if plic_irq = '1' then
+                                        rdata_r(0) <= '1';
+                                        plic_claimed <= '1';
+                                    end if;
+                                when others => null;
+                            end case;
+                        elsif sel_ps2 then
+                            if addr(2) = '0' then              -- data: RAVAIL in 31:16
+                                if k_count /= 0 then
+                                    rdata_r(31 downto 16) <= std_logic_vector(to_unsigned(k_count, 16));
+                                    rdata_r(15) <= '1';        -- RVALID
+                                    rdata_r(7 downto 0) <= kfifo(to_integer(k_rd));
+                                    pop_k := true;
+                                end if;
+                            else                               -- control: RI bit 8, RE bit 0
+                                if k_count /= 0 then rdata_r(8) <= '1'; end if;
+                                rdata_r(0) <= ps2_ie;
                             end if;
                         elsif sel_clint then
                             case co is
@@ -296,6 +349,9 @@ begin
                 k_wr <= (others => '0'); k_rd <= (others => '0'); k_count <= 0;
                 rx_full  <= '0';
                 mode16_r <= '0';
+                ps2_ie   <= '0';
+                plic_prio <= (others => '0'); plic_thr <= (others => '0');
+                plic_en  <= '0'; plic_claimed <= '0';
                 u_ier    <= (others => '0');
                 u_lcr    <= (others => '0');
                 u_mcr    <= (others => '0');

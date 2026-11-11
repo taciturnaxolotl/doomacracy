@@ -61,6 +61,7 @@ entity cpu is
         -- CLINT
         irq_timer : in std_logic;                     -- mip.MTIP
         irq_soft  : in std_logic;                     -- mip.MSIP
+        irq_ext   : in std_logic;                     -- mip.MEIP (PS/2 receive)
         mtime     : in std_logic_vector(63 downto 0); -- time CSR
         halt_req  : in std_logic;                     -- syscon power off
         -- debug
@@ -189,6 +190,8 @@ architecture rtl of cpu is
                 f := sz /= "10" or not (off(27 downto 8) = 0                    -- registers
                                         or off(27 downto 5) = 16#80#            -- 16550
                                         or off = 16#2000#                       -- syscon
+                                        or off(27 downto 3) = 16#600#           -- PS/2 (altera_ps2)
+                                        or off(27 downto 22) = 16               -- PLIC
                                         or off(27 downto 16) = 16#100#);        -- CLINT
             when others => f := true;
         end case;
@@ -281,7 +284,7 @@ begin
 
     ---------------------------------------------------------------- CSRs
     process (instr, st_mie, st_mpie, st_mpp, ie_s, ie_t, ie_e, mtvec, mscratch, mepc, mcause,
-             mtval, irq_timer, irq_soft, cycles, instret, mtime)
+             mtval, irq_timer, irq_soft, irq_ext, cycles, instret, mtime)
         variable r : std_logic_vector(31 downto 0);
     begin
         r := (others => '0');
@@ -294,7 +297,7 @@ begin
             when x"341" => r := mepc;
             when x"342" => r := mcause;
             when x"343" => r := mtval;
-            when x"344" => r(7) := irq_timer; r(3) := irq_soft;
+            when x"344" => r(11) := irq_ext; r(7) := irq_timer; r(3) := irq_soft;
             when x"C00" | x"B00" => r := std_logic_vector(cycles(31 downto 0));
             when x"C80" | x"B80" => r := std_logic_vector(cycles(63 downto 32));
             when x"C01"          => r := mtime(31 downto 0);
@@ -387,7 +390,8 @@ begin
     end process;
 
     -- between instructions: interrupts, then a fetch that would fault
-    irq_take <= '1' when ((irq_timer = '1' and ie_t = '1') or (irq_soft = '1' and ie_s = '1'))
+    irq_take <= '1' when ((irq_timer = '1' and ie_t = '1') or (irq_soft = '1' and ie_s = '1')
+                          or (irq_ext = '1' and ie_e = '1'))
                          and (st_mie = '1' or priv_m = '0') else '0';
     fetch_bad <= '0' when pc(1 downto 0) = "00" and
                           ((pc(31 downto 28) = x"0" and pc(27 downto 12) = 0) or
@@ -726,7 +730,12 @@ begin
                     elsif ftrap = '1' then
                         trap := true;
                         if irq_take = '1' then
-                            if irq_timer = '1' and ie_t = '1' then
+                            -- priority as in the privileged spec: external, software, timer
+                            if irq_ext = '1' and ie_e = '1' then
+                                tcause := x"8000000B";
+                            elsif irq_soft = '1' and ie_s = '1' then
+                                tcause := x"80000003";
+                            elsif irq_timer = '1' and ie_t = '1' then
                                 tcause := x"80000007";
                             else
                                 tcause := x"80000003";

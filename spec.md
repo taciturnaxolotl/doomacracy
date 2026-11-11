@@ -163,6 +163,8 @@ For a no-MMU Linux. Implemented in both the emulator and the RTL.
 | SDRAM alias | `0x8000_0000` | the same 8 MB as `0x2000_0000`; the D-cache folds both onto one tag, so the two views can't go stale |
 | console | `0xF000_1000` | 16550, registers 4 bytes apart (Linux `ns16550a`, `reg-shift = 2`), polled; output goes to the RS-232 pin and the JTAG console |
 | syscon | `0xF000_2000` | write `0x5555` to power off (CPU halts, HEX `00FF`), `0x7777` to reboot (full board reset) |
+| PS/2 | `0xF000_3000` | the keyboard FIFO laid out like Altera's PS/2 core (Linux `altr,ps2-1.0`): `+0` read pops a byte, bits 31:16 = bytes waiting, bit 15 valid; `+4` bit 0 = receive interrupt enable, bit 8 = interrupt pending. Receive only |
+| PLIC | `0xF400_0000` | `sifive,plic-1.0.0` with one source (1 = PS/2) and one context (M-mode, MEIP): priority `+0x4`, pending `+0x1000`, enable `+0x2000` bit 1, threshold `+0x200000`, claim/complete `+0x200004` |
 | CLINT | `0xF100_0000` | msip `+0`, mtimecmp `+0x4000`, mtime `+0xBFF8`; mtime counts microseconds and is also `TIMER_US` |
 
 ### JTAG console (Virtual JTAG IR 3)

@@ -45,7 +45,7 @@ begin
     dut : entity work.cpu
         port map (clk, reset, i_prime, i_raddr, i_req, i_addr, i_ack, i_rdata,
                   d_prime, d_raddr, d_req, d_addr, d_we, d_wstrb, d_wdata, d_ack, d_rdata,
-                  open, '0', '0', (63 downto 0 => '0'), '0',
+                  open, '0', '0', '0', (63 downto 0 => '0'), '0',
                   halted, retire, retire_pc, retire_rd, retire_data);
 
     process

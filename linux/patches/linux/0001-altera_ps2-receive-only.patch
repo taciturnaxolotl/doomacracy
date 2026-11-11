@@ -1,0 +1,13 @@
+--- a/drivers/input/serio/altera_ps2.c	2026-11-11 15:53:51.874174501 -0500
++++ b/drivers/input/serio/altera_ps2.c	2026-11-11 15:53:51.875556026 -0500
+@@ -105,7 +105,9 @@
+ 		return -ENOMEM;
+ 
+ 	serio->id.type		= SERIO_8042;
+-	serio->write		= altera_ps2_write;
++	/* doomacracy: the PS/2 port only receives, so no write: atkbd then
++	   skips probing and treats it as a set 2 keyboard */
++	serio->write		= NULL;
+ 	serio->open		= altera_ps2_open;
+ 	serio->close		= altera_ps2_close;
+ 	strscpy(serio->name, dev_name(&pdev->dev), sizeof(serio->name));

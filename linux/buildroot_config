@@ -360,7 +360,7 @@ BR2_OPTIMIZE_S=y
 BR2_ENABLE_LTO=y
 BR2_STATIC_LIBS=y
 BR2_PACKAGE_OVERRIDE_FILE="$(CONFIG_DIR)/local.mk"
-BR2_GLOBAL_PATCH_DIR="board/qemu/riscv32-virt/nommu/patches"
+BR2_GLOBAL_PATCH_DIR="board/qemu/riscv32-virt/nommu/patches $(BR2_EXTERNAL_PATCHES)"
 
 #
 # Advanced

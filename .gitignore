@@ -18,3 +18,5 @@ sim/linuxboot/stub_rom.txt
 sim/jtagtest/*.elf
 sim/jtagtest/*.bin
 sim/jtagtest/*.hex
+sim/ps2test/*.elf
+sim/ps2test/*.bin

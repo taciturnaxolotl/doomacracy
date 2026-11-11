@@ -468,11 +468,42 @@ static void uart16550_write(uint32_t r, uint32_t v)
     }
 }
 static int poweroff_requested;
+static int ps2_ie;   /* altera_ps2 control RE */
+/* one-source PLIC at 0xF400_0000 (source 1 = PS/2), as in rtl/io.vhd */
+static uint32_t plic_prio, plic_thr, plic_en, plic_claimed;
+static int plic_irq(void)
+{
+    int pend = ps2_ie && kf_n && !plic_claimed;
+    return pend && plic_en && plic_prio > plic_thr;
+}
 static uint32_t io_read_regs(uint32_t off);
 static uint32_t io_read(uint32_t off)
 {
     if (off >= 0x1000 && off < 0x1020) return uart16550_read((off - 0x1000) >> 2);
     if (off == 0x2000) return 0;
+    if (off == 0x3000) {                                 /* altera_ps2 data */
+        kbd_update();
+        if (kf_n) {
+            uint8_t b = kfifo[kf_head];
+            uint32_t n = kf_n;
+            kf_head = (kf_head + 1) & 15;
+            kf_n--;
+            return n << 16 | 0x8000 | b;
+        }
+        return 0;
+    }
+    if (off == 0x3004) { kbd_update(); return (kf_n ? 0x100 : 0) | ps2_ie; }
+    if (off >= 0x4000000 && off < 0x4400000) {
+        kbd_update();
+        switch (off - 0x4000000) {
+        case 0x000004: return plic_prio;
+        case 0x001000: return (ps2_ie && kf_n && !plic_claimed) << 1;
+        case 0x002000: return plic_en << 1;
+        case 0x200000: return plic_thr;
+        case 0x200004: if (plic_irq()) { plic_claimed = 1; return 1; } return 0;
+        }
+        return 0;
+    }
     if (off >= 0x1000000 && off < 0x1010000) {          /* CLINT */
         uint64_t mtime = cycles() / (CLK_HZ / 1000000);
         switch (off - 0x1000000) {
@@ -521,6 +552,17 @@ static void io_write_regs(uint32_t off, uint32_t v);
 static void io_write(uint32_t off, uint32_t v)
 {
     if (off >= 0x1000 && off < 0x1020) { uart16550_write((off - 0x1000) >> 2, v); return; }
+    if (off == 0x3000) return;                           /* no PS/2 transmitter */
+    if (off == 0x3004) { ps2_ie = v & 1; return; }
+    if (off >= 0x4000000 && off < 0x4400000) {
+        switch (off - 0x4000000) {
+        case 0x000004: plic_prio = v & 7; return;
+        case 0x002000: plic_en = (v >> 1) & 1; return;
+        case 0x200000: plic_thr = v & 7; return;
+        case 0x200004: if ((v & 31) == 1) plic_claimed = 0; return;
+        }
+        return;
+    }
     if (off == 0x2000) {                                 /* syscon */
         if (v == 0x5555 || v == 0x7777) { poweroff_requested = v; stop_requested = 1; }
         return;
@@ -720,8 +762,13 @@ static int run_inner(void)
             next_vga_dump = frame_count() + dump_vga;
             dump_frame();
         }
-        if ((mip_r & mie_r & 0x88) && ((mstatus & 8) || priv < 3)) {
-            take_trap(mip_r & mie_r & 0x80 ? 0x80000007u : 0x80000003u, 0);
+        if ((instret & 1023) == 0 || !plic_irq()) {
+            if (ps2_ie && (instret & 1023) == 0) kbd_update();
+            if (plic_irq()) mip_r |= 0x800; else mip_r &= ~0x800u;
+        }
+        if ((mip_r & mie_r & 0x888) && ((mstatus & 8) || priv < 3)) {
+            uint32_t p = mip_r & mie_r;
+            take_trap(p & 0x800 ? 0x8000000bu : p & 0x8 ? 0x80000003u : 0x80000007u, 0);
             continue;
         }
         uint32_t ins = fetch(pc);
@@ -962,7 +1009,7 @@ static void stats(void)
     fflush(stdout);
     fprintf(stderr, "\n--- emu stats ---\n");
     fprintf(stderr, "instructions retired: %llu\n", (unsigned long long)instret);
-    if (kernel_path)
+    if (kernel_path || mtvec)
         fprintf(stderr, "pc %08x priv %d mstatus %08x mcause %08x mepc %08x mtval %08x mie %03x mip %03x\n",
                 pc, priv, mstatus, mcause, mepc, mtval, mie_r, mip_r);
     fprintf(stderr, "cycles (cpi %.2f):    %llu (%.3f s at 50 MHz)\n", cpi,
