@@ -25,10 +25,14 @@ make linux-emu            # 8 MB, the board's real size
 - `CONFIG_RISCV_MISALIGNED=y`: our CPU traps on misaligned loads and stores
   (cnlohr's emulator quietly handles them), so the kernel has to fix them up.
 - busybox: `FEATURE_PREFER_APPLETS` and `FEATURE_SH_STANDALONE`, so hush runs
-  simple applets in-process; a few big applets dropped (unzip, top, tree,
-  lsof, checksums, xxd...). Busybox is 478 KB, under 512 KB: no-MMU loads a
-  private copy per process in a power-of-two block, so this halves the cost
-  of every command.
+  simple applets in-process; `vi` turned on; a few applets dropped (unzip,
+  top, tree, lsof, checksums, xxd, and login/getty, which pulled in 83 KB of
+  password code nothing here uses). No-MMU loads a private copy of busybox
+  for every process, rounded up to a power of two, so its load size (text +
+  data + bss + stack, from `flthdr`) has to stay under 512 KB; it is 430 KB.
+- `patches/uclibc/0001-riscv32-no-64bit-syscall-arg-alignment.patch`: uClibc
+  padded 64-bit syscall arguments ARM-style on riscv32, so `ftruncate`
+  received a length of 0 and `vi` emptied every file it saved.
 - `overlay/etc/inittab`: a respawning root shell on the serial console and
   one on the screen (`tty1`).
 - Framebuffer console: `FB_SIMPLE`, `FRAMEBUFFER_CONSOLE`, `FONT_6x8`.

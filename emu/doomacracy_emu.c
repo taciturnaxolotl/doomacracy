@@ -345,13 +345,13 @@ static void kbd_update(void)
         t = e->when;
         if (t < last_arrival + PS2_BYTE_CYCLES && last_arrival) t = last_arrival + PS2_BYTE_CYCLES;
         if (t > now) break;
+        /* full FIFO: hold the rest back. Idle time is skipped in jumps
+           (WFI), which would otherwise land many scripted keys at once,
+           something a real keyboard can't do. */
+        if (kf_n >= 16) break;
         last_arrival = t;
-        if (kf_n < 16) {
-            kfifo[(kf_head + kf_n) & 15] = e->byte;
-            kf_n++;
-        } else {
-            kbd_dropped++;
-        }
+        kfifo[(kf_head + kf_n) & 15] = e->byte;
+        kf_n++;
         kq_head++;
     }
 }
@@ -1032,6 +1032,9 @@ static void stats(void)
                 (unsigned long long)flip_dt_max);
     if (min_sp != 0xffffffff)
         fprintf(stderr, "lowest sp in SRAM:    %08x\n", min_sp);
+    if (kq_n)
+        fprintf(stderr, "kbd: %d of %d scripted bytes delivered, %d in FIFO, ps2_ie %d, plic en %u prio %u claimed %u\n",
+                kq_head, kq_n, kf_n, ps2_ie, plic_en, plic_prio, plic_claimed);
     if (kbd_dropped)
         fprintf(stderr, "kbd bytes dropped (FIFO full): %llu\n", (unsigned long long)kbd_dropped);
     fprintf(stderr, "LEDR=%03x LEDG=%02x HEX=%04x FB_BASE=%05x\n", ledr, ledg, hex, fb_base);

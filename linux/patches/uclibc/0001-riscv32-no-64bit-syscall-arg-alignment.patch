@@ -1,0 +1,18 @@
+riscv32: don't pad 64-bit syscall arguments to an even register pair
+
+The RISC-V Linux syscall ABI passes a 64-bit argument in the next two
+registers with no padding (the kernel reads ftruncate's length from a1/a2).
+With the ARM-style alignment uClibc sent (fd, 0, low, high), so the kernel
+saw a length of 0 and, for example, busybox vi truncated every file it saved.
+
+--- a/libc/sysdeps/linux/riscv32/bits/uClibc_arch_features.h
++++ b/libc/sysdeps/linux/riscv32/bits/uClibc_arch_features.h
+@@ -13,7 +13,7 @@
+ /* does your target use statx */
+ #undef __UCLIBC_HAVE_STATX__
+ 
+-#define __UCLIBC_SYSCALL_ALIGN_64BIT__
++#undef __UCLIBC_SYSCALL_ALIGN_64BIT__
+ 
+ /* does your target have a broken create_module() ? */
+ #define __UCLIBC_BROKEN_CREATE_MODULE__
