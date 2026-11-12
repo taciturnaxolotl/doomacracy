@@ -44,3 +44,16 @@ make linux-emu            # 8 MB, the board's real size
   patches`), which carries the rv32 no-MMU support; replacing it instead of
   adding to it builds a kernel whose `wait4` returns ENOSYS.
 - The kernel's built-in device tree is not used; `tools/gen_dts.py` writes it.
+
+## doomfetch
+
+`doomfetch/doomfetch.c` is a small neofetch, compiled into the image by
+`post-build.sh` and run from `/etc/profile` when a shell starts. It is C on
+purpose: every process here loads its own copy of its program, so a 64 KB
+binary is far cheaper than a script that runs busybox (430 KB) a dozen
+times. For the same reason a pipe of two external busybox commands can run
+out of memory; prefer shell builtins where you can.
+
+Programs of your own are built the same way: the buildroot cross gcc with
+`-fPIC -Wl,-elf2flt="-r -s STACK"`, and delete the `.gdb` file elf2flt
+leaves next to the binary.

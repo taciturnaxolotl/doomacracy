@@ -1,0 +1,4 @@
+# login shells: say hello
+export PATH=/bin:/sbin:/usr/bin:/usr/sbin
+export USER=root
+[ -x /usr/bin/doomfetch ] && doomfetch

@@ -12,7 +12,8 @@ cp "$here/busybox_config" buildroot/busybox_config
 cp "$here/uclibc_config"  buildroot/uclibc_config
 cp "$here/uclibc_config"  buildroot/uclibc_config_extra
 sed -e "s|\$(BR2_EXTERNAL_OVERLAY)|$here/overlay|" \
-    -e "s|\$(BR2_EXTERNAL_PATCHES)|$here/patches|" "$here/buildroot_config" > buildroot/.config
+    -e "s|\$(BR2_EXTERNAL_PATCHES)|$here/patches|" \
+    -e "s|\$(BR2_EXTERNAL_POSTBUILD)|$here/post-build.sh|" "$here/buildroot_config" > buildroot/.config
 # host tools are old enough to break under C23 (GCC 15's default)
 make -C buildroot -j"$(nproc)" HOSTCFLAGS="-O2 -std=gnu17"
 ls -l buildroot/output/images/Image
