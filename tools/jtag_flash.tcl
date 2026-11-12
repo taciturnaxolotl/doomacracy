@@ -19,7 +19,9 @@ if {[llength $args] < 1} {
     exit 1
 }
 set path [lindex $args 0]
-set chunk_words 512
+# The board drains the receive FIFO far faster than the cable fills it, so
+# big scans are safe and save per-call overhead in quartus_stp.
+set chunk_words 2048
 if {[llength $args] > 1} { set chunk_words [lindex $args 1] }
 
 set f [open $path r]
@@ -95,4 +97,5 @@ set got [expr {$status & 0x7FFFFFFF}]
 set ovf [expr {($status >> 31) & 1}]
 puts [format "board received %d of %d words%s" $got [expr {$total / 4}] [expr {$ovf ? ", OVERFLOW (try fewer words per scan)" : ""}]]
 if {$got != $total / 4 || $ovf} { exit 1 }
-puts "now watch HEX: 2000 erasing, 3xxx programming, 4000 verifying, 600d done"
+puts "now watch HEX: 2xx0 erasing and 3xx0 programming each changed 64 KB region, then 600d (LEDR = regions rewritten)"
+puts "(with SW8 up as well, a Linux image boots straight from RAM instead and the flash is left alone)"

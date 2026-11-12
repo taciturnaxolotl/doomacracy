@@ -235,13 +235,14 @@ soc-boot: rom sw emu
 	    -gTRACE=$(BUILD)/rtl_trace.txt -gTRACE_MAX=$(TRACE_N) -gMAX_MS=1000 -gDUMP_EVERY=10 -r
 	$(PYTHON) tools/cmptrace.py $(BUILD)/emu_trace.txt $(BUILD)/rtl_trace.txt
 
-# JTAG loader end to end: erased flash, SW9 up, the stand-in JTAG port plays
+# JTAG loader end to end: flash holding something else (so the changed
+# sector has to be erased), SW9 up, the stand-in JTAG port plays
 # sim/jtagtest/stream.hex; the real boot ROM must program the flash and then
 # boot the image it wrote, which prints "hello from flash".
 .PHONY: jtag-test
 jtag-test: rom
 	$(MAKE) -C sim/jtagtest
-	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=none -gSWITCHES=512 -gMAX_MS=60 -gDUMP_FIRST=100000 -r
+	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=sim/soctest/flash_test.hex -gSWITCHES=512 -gMAX_MS=60 -gDUMP_FIRST=100000 -r
 
 PPM2PNG_SIM = cd sim/out && for f in *.ppm; do [ -f "$$f" ] && $(MAGICK) $$f $${f%.ppm}.png && rm $$f; done; true
 

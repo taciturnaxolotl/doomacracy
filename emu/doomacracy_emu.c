@@ -83,7 +83,8 @@ static uint8_t *jtag_buf; static size_t jtag_len, jtag_pos;
    program finish instantly, so status polling sees them done at once. */
 static int fl_cycle;            /* position in the unlock sequence */
 static int fl_mode;             /* 0 read, 1 program next write, 2 erase setup */
-static uint64_t fl_programs, fl_erases;
+static uint64_t fl_programs, fl_erases, fl_sector_erases;
+static int fl_boot_sectors;   /* --flash-boot-sectors: top 64 KB is 8 x 8 KB */
 static void flash_write(uint32_t off, uint8_t v)
 {
     if (fl_mode == 1) {                                          /* program */
@@ -100,6 +101,13 @@ static void flash_write(uint32_t off, uint8_t v)
         if (off == 0xAAA && v == 0xA0) { fl_mode = 1; fl_cycle = 0; return; }
         if (off == 0xAAA && v == 0x80) { fl_mode = 2; fl_cycle = 0; return; }
         if (off == 0xAAA && v == 0x90) { fl_cycle = 0; return; }  /* autoselect: ignored */
+        if (v == 0x30 && fl_mode == 2) {                          /* sector erase */
+            uint32_t size = fl_boot_sectors && off >= FLASH_SIZE - 0x10000 ? 0x2000 : 0x10000;
+            memset(flash + (off & ~(size - 1)), 0xff, size);
+            fl_sector_erases++;
+            fl_mode = 0; fl_cycle = 0;
+            return;
+        }
         if (off == 0xAAA && v == 0x10 && fl_mode == 2) {          /* chip erase */
             memset(flash, 0xff, FLASH_SIZE);
             fl_erases++;
@@ -1095,6 +1103,7 @@ static void usage(void)
 "  --dtb FILE         device tree for --kernel, placed in the top 16 KB of SDRAM\n"
 "  --sdram-mb N       SDRAM size (default 8, the DE1's; larger is emulator only)\n"
 "  --flash-out FILE   write the flash contents here on exit\n"
+"  --flash-boot-sectors  model a top-boot part (last 64 KB as 8 KB sectors)\n"
 "  --log-flips        print instret and VGA frame number on every page flip\n"
 "  --quiet            fewer messages\n");
     exit(1);
@@ -1133,6 +1142,7 @@ int main(int argc, char **argv)
         else if (!strcmp(o, "--dtb")) dtb_path = ARG;
         else if (!strcmp(o, "--sdram-mb")) sdram_size_v = (uint32_t)atoi(ARG) << 20;
         else if (!strcmp(o, "--flash-out")) flash_out = ARG;
+        else if (!strcmp(o, "--flash-boot-sectors")) fl_boot_sectors = 1;
         else if (!strcmp(o, "--quiet")) quiet = 1;
         else if (!strcmp(o, "--log-flips")) log_flips = 1;
         else usage();
@@ -1183,9 +1193,10 @@ int main(int argc, char **argv)
         if (!f || fwrite(flash, 1, FLASH_SIZE, f) != FLASH_SIZE) { fprintf(stderr, "emu: cannot write %s\n", flash_out); exit(1); }
         fclose(f);
     }
-    if (fl_erases || fl_programs)
-        fprintf(stderr, "flash: %llu chip erases, %llu bytes programmed\n",
-                (unsigned long long)fl_erases, (unsigned long long)fl_programs);
+    if (fl_erases || fl_programs || fl_sector_erases)
+        fprintf(stderr, "flash: %llu chip erases, %llu sector erases, %llu bytes programmed\n",
+                (unsigned long long)fl_erases, (unsigned long long)fl_sector_erases,
+                (unsigned long long)fl_programs);
     stats();
     return rc;
 }

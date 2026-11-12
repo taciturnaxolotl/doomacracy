@@ -35,11 +35,15 @@ The WAD is not bundled with the repo; put the shareware `doom1.wad` in `wad/`.
    quartus_stp -t jtag_flash.tcl flash.bin
    ```
 
-   HEX then counts through `2000` (erase, can take a minute), `3xxx`
-   (program), `4000` (verify) and `600d`, and the game boots.
+   HEX then counts through `2rr0` and `3rr0` (erasing and programming each
+   64 KB region that changed) and `600d`, and the game boots. Only regions
+   that differ from what's already in flash are rewritten, so loading a
+   slightly changed image is quick.
 3. Put SW9 back down. From now on KEY0 just boots Doom.
 
-Redo step 2 only when the firmware changes.
+Redo step 2 only when the firmware changes. To try a Linux image without
+writing the flash at all, put SW8 up as well as SW9: it boots straight from
+RAM and is gone at the next reset.
 
 the canonical repo for this is hosted on tangled over at [`https://tangled.org/dunkirk.sh/doomacracy`](https://tangled.org/dunkirk.sh/doomacracy)
 

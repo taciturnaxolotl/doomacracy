@@ -211,8 +211,8 @@ use std.textio.all;
 use ieee.std_logic_textio.all;
 
 -- 4 MB x 8 NOR flash, loaded from a hex file (one byte a line). Knows the
--- AMD byte-mode commands the boot ROM uses: reset, byte program and chip
--- erase. While an operation runs, DQ7 reads inverted (0 for an erase) and
+-- AMD byte-mode commands the boot ROM uses: reset, byte program, sector
+-- erase (uniform 64 KB sectors) and chip erase. While an operation runs, DQ7 reads inverted (0 for an erase) and
 -- DQ6 toggles on every read.
 entity flash_model is
     generic (
@@ -285,6 +285,12 @@ begin
         elsif cyc = 1 and ad = 16#555# and v = 16#55# then cyc := 2;
         elsif cyc = 2 and ad = 16#AAA# and v = 16#A0# then mode := 1; cyc := 0;
         elsif cyc = 2 and ad = 16#AAA# and v = 16#80# then mode := 2; cyc := 0;
+        elsif cyc = 2 and v = 16#30# and mode = 2 then
+            report "flash: sector erase at " & integer'image(ad - ad mod 65536);
+            for i in ad - ad mod 65536 to ad - ad mod 65536 + 65535 loop mem(i) := 255; end loop;
+            mode := 0; cyc := 0;
+            dq7_busy <= '0';
+            busy <= true; wait for ERASE_TIME; busy <= false;
         elsif cyc = 2 and ad = 16#AAA# and v = 16#10# and mode = 2 then
             report "flash: chip erase";
             for i in mem'range loop mem(i) := 255; end loop;

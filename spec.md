@@ -131,7 +131,7 @@ per load or store. A pipelined core is the next big win.
 
 ## JTAG flash loader
 
-With SW9 up at reset, the boot ROM writes a new flash image before booting.
+With SW9 up at reset, the boot ROM takes an image over JTAG before booting.
 `tools/jtag_flash.tcl` (run with `quartus_stp`) sends it through an Altera
 Virtual JTAG instance (`rtl/vjtag_port.vhd`, 2-bit IR):
 
@@ -141,14 +141,23 @@ Virtual JTAG instance (`rtl/vjtag_port.vhd`, 2-bit IR):
 - IR 2: a 32-bit DR capture of {overflow, words received}.
 
 Stream: `0x4A544147` ("JTAG"), word count n, n image words, their 32-bit
-sum. The boot ROM buffers the image in SDRAM, checks the sum, chip-erases,
-programs every byte that isn't `FF` (AMD byte-mode commands, DQ7 data
-polling), verifies, and then boots normally.
+sum. The boot ROM buffers the image in the top 4 MB of SDRAM and checks the
+sum. Then:
 
-HEX shows the phase: `1xxx` receiving, `2000` erasing, `3xxx` programming,
-`4000` verifying, `600d` done. Errors: `E010` image too big, `E011` bad
-checksum, `E012` FIFO overflow, `E013` erase failed, `E014` program failed,
-`E015` verify mismatch, each followed by a value as with `E001`.
+- SW9 alone: it compares the image with the flash 64 KB at a time and only
+  touches regions that differ. In such a region every 8 KB chunk that isn't
+  blank gets a sector erase (so both uniform 64 KB sectors and 8 KB boot
+  sectors work), then it programs the non-`FF` bytes (AMD byte-mode
+  commands, DQ7 data polling), verifies the region, and moves on. Loading
+  the same image again rewrites nothing. Afterwards it boots normally.
+- SW9 and SW8: the image must be a Linux image; it boots from the RAM
+  buffer and the flash is left alone.
+
+HEX shows the phase: `1xxx` receiving, `2rr0` erasing and `3rr0` programming
+region rr, `600d` done (LEDR = regions rewritten). Errors: `E010` image too
+big, `E011` bad checksum, `E012` FIFO overflow, `E013` erase failed, `E014`
+program failed, `E015` verify mismatch, `E016` not a Linux image (RAM boot),
+each followed by a value as with `E001`.
 
 ## Linux platform
 

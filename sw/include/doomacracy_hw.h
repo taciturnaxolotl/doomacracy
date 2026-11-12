@@ -31,6 +31,8 @@
 #define JTAG_STATUS IO_REG(0x44)   /* bit 0 word waiting, bit 1 overflow (sticky) */
 
 #define SW_JTAG_LOAD  (1u << 9)    /* SW9 up at reset: load flash over JTAG */
+#define SW_JTAG_RAM   (1u << 8)    /* with SW9: boot a Linux image from RAM instead */
+#define JTAG_RAM_BUF  (SDRAM_BASE + 0x400000u)  /* receive buffer: top 4 MB of SDRAM */
 #define JTAG_MAGIC    0x4A544147u  /* "JTAG": first word of a load stream */
 
 #define UART_TX_READY 1u

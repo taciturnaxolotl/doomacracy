@@ -126,9 +126,13 @@ static NOINLINE uint32_t flash_diag(void)
     return s1 << 24 | s2 << 16 | mf << 8 | dev;
 }
 
-static NOINLINE void jtag_load(void)
+#define FL32(off) (*(volatile uint32_t *)(FLASH_BASE + (off)))
+#define SECTOR    0x10000u          /* 64 KB main sectors */
+#define SUBSECTOR 0x2000u           /* 8 KB boot sectors, if the part has them */
+
+/* Receive a JTAG stream into buf, return its length in words. */
+static NOINLINE uint32_t jtag_receive(uint32_t *buf, uint32_t max_words)
 {
-    uint32_t *buf = (uint32_t *)SDRAM_BASE;
     uint32_t n, sum = 0, i;
 
     puts_imm("jtag: wait\r\n");
@@ -137,7 +141,7 @@ static NOINLINE void jtag_load(void)
     while (jtag_word() != JTAG_MAGIC)
         ;
     n = jtag_word();
-    if (n > FLASH_SIZE / 4)
+    if (n > max_words)
         fail(0x10, n);
     for (i = 0; i < n; i++) {
         uint32_t w = jtag_word();
@@ -150,49 +154,90 @@ static NOINLINE void jtag_load(void)
         fail(0x11, sum);
     if (JTAG_STATUS & 2)
         fail(0x12, n);
-    puts_imm("jtag: erase\r\n");
-
-    HEX = 0x2000;
-    FL8(0) = 0xF0;           /* reset, in case the chip was left mid-command */
-    flash_cmd(0x80);
-    flash_cmd(0x10);
-    if (flash_wait(0, 0xff))
-        fail(0x13, flash_diag());
-
-    puts_imm("jtag: write\r\n");
-    {
-        const uint8_t *src = (const uint8_t *)SDRAM_BASE;
-        for (i = 0; i < n * 4; i++) {
-            if ((i & 0xfff) == 0) {
-                HEX = 0x3000 | (i >> 12);
-                LEDR = i >> 12;
-            }
-            if (src[i] == 0xff)
-                continue;
-            flash_cmd(0xA0);
-            FL8(i) = src[i];
-            if (flash_wait(i, src[i])) {
-                fail(0x14, flash_diag());
-            }
-        }
-        HEX = 0x4000;
-        for (i = 0; i < n * 4; i++)
-            if (FL8(i) != src[i])
-                fail(0x15, i);
-    }
-    puts_imm("jtag: ok\r\n");
-    HEX = 0x600D;
-    LEDR = 0;
+    return n;
 }
 
-static NOINLINE void copy_words(uint32_t *dst, uint32_t flash_off, uint32_t bytes)
+static NOINLINE void sector_erase(uint32_t off)
 {
-    volatile uint32_t *src = (volatile uint32_t *)(FLASH_BASE + flash_off);
-    for (uint32_t i = 0; i < (bytes + 3) >> 2; i++) {
-        dst[i] = src[i];
-        if ((i & 0x3fff) == 0)
-            LEDR = i >> 14;
+    flash_cmd(0x80);
+    FL8(0xAAA) = 0xAA;
+    FL8(0x555) = 0x55;
+    FL8(off) = 0x30;
+    if (flash_wait(off, 0xff))
+        fail(0x13, flash_diag());
+}
+
+/* Write len bytes from src, touching only the 64 KB regions that differ.
+   Within a region every 8 KB chunk that isn't blank gets a sector erase at
+   its start: with a 64 KB sector the first erase blanks the rest, with
+   8 KB boot sectors each one is erased in turn. */
+static NOINLINE void flash_update(const uint8_t *src, uint32_t len)
+{
+    const uint32_t *s32 = (const uint32_t *)src;
+    uint32_t r, a, end, changed = 0;
+
+    FL8(0) = 0xF0;           /* reset, in case the chip was left mid-command */
+    for (r = 0; r < len; r += SECTOR) {
+        end = r + SECTOR < len ? r + SECTOR : len;
+        for (a = r; a < end; a += 4)
+            if (FL32(a) != s32[a >> 2])
+                break;
+        if (a >= end)
+            continue;            /* region already holds the image */
+        changed++;
+        HEX = 0x2000 | (r >> 16);
+        LEDR = r >> 16;
+        for (a = r; a < r + SECTOR; a += 4) {
+            if (FL32(a) != 0xffffffffu) {
+                sector_erase(a & ~(SUBSECTOR - 1));
+                a = (a & ~(SUBSECTOR - 1)) + SUBSECTOR - 4;
+            }
+        }
+        HEX = 0x3000 | (r >> 16);
+        for (a = r; a < end; a++) {
+            if (src[a] == 0xff)
+                continue;
+            flash_cmd(0xA0);
+            FL8(a) = src[a];
+            if (flash_wait(a, src[a]))
+                fail(0x14, flash_diag());
+        }
+        for (a = r; a < end; a += 4)
+            if (FL32(a) != s32[a >> 2])
+                fail(0x15, a);
     }
+    puts_imm("jtag: ok, sectors rewritten ");
+    puthex(changed);
+    puts_imm("\r\n");
+    HEX = 0x600D;
+    LEDR = changed;
+}
+
+/* Copy kernel and device tree out of a Linux image (flash or a RAM buffer)
+   and enter the kernel. */
+static NOINLINE __attribute__((noreturn)) void boot_linux(const uint32_t *img)
+{
+    uint32_t klen = img[1], doff = img[2], dlen = img[3], i;
+    uint32_t *dst = (uint32_t *)SDRAM_BASE, *dtb = (uint32_t *)LINUX_DTB_AT;
+
+    if (klen > JTAG_RAM_BUF - SDRAM_BASE - FLASH_FW_OFFSET || dlen > 0x4000 ||
+        doff + dlen > LINUX_DTB_AT - JTAG_RAM_BUF)
+        fail(5, klen);
+    puts_imm("boot: linux\r\n");
+    HEX = 0xB104;
+    for (i = 0; i < (klen + 3) >> 2; i++)
+        dst[i] = img[(FLASH_FW_OFFSET >> 2) + i];
+    for (i = 0; i < (dlen + 3) >> 2; i++)
+        dtb[i] = img[(doff >> 2) + i];
+    FB_BASE = LINUX_FB_OFFSET;
+    VIDEO_MODE = 1;              /* RGB565 for Linux's simplefb console */
+    HEX = 0xB105;
+    {
+        register uint32_t a0 __asm__("a0") = 0;
+        register uint32_t a1 __asm__("a1") = LINUX_DTB_AT - SDRAM_BASE + LINUX_ENTRY;
+        __asm__ volatile("jr %2" :: "r"(a0), "r"(a1), "r"(LINUX_ENTRY));
+    }
+    __builtin_unreachable();
 }
 
 void __attribute__((noreturn)) boot_main(void)
@@ -204,28 +249,21 @@ void __attribute__((noreturn)) boot_main(void)
     LEDG = 1;
     HEX = 0xB001;
     puts_imm("\r\ndoomacracy boot rom\r\n");
-    if (SWITCHES & SW_JTAG_LOAD)
-        jtag_load();
+    if (SWITCHES & SW_JTAG_LOAD) {
+        uint32_t *buf = (uint32_t *)JTAG_RAM_BUF;
+        uint32_t n = jtag_receive(buf, FLASH_SIZE / 4);
+        if (SWITCHES & SW_JTAG_RAM) {
+            /* SW8 too: boot a Linux image straight from RAM, flash untouched */
+            if (buf[0] != LINUX_MAGIC)
+                fail(0x16, buf[0]);
+            boot_linux(buf);
+        }
+        flash_update((const uint8_t *)buf, n * 4);
+    }
 
     magic = h->magic;
-    if (magic == LINUX_MAGIC) {
-        volatile uint32_t *hw = (volatile uint32_t *)FLASH_BASE;
-        uint32_t klen = hw[1], doff = hw[2], dlen = hw[3];
-        if (klen > LINUX_DTB_AT - SDRAM_BASE || dlen > 0x4000)
-            fail(5, klen);
-        puts_imm("boot: linux\r\n");
-        HEX = 0xB104;
-        copy_words((uint32_t *)SDRAM_BASE, FLASH_FW_OFFSET, klen);
-        copy_words((uint32_t *)LINUX_DTB_AT, doff, dlen);
-        FB_BASE = LINUX_FB_OFFSET;
-        VIDEO_MODE = 1;              /* RGB565 for Linux's simplefb console */
-        HEX = 0xB105;
-        {
-            register uint32_t a0 __asm__("a0") = 0;
-            register uint32_t a1 __asm__("a1") = LINUX_DTB_AT - SDRAM_BASE + LINUX_ENTRY;
-            __asm__ volatile("jr %2" :: "r"(a0), "r"(a1), "r"(LINUX_ENTRY));
-        }
-    }
+    if (magic == LINUX_MAGIC)
+        boot_linux((const uint32_t *)FLASH_BASE);
     if (magic != FLASH_MAGIC) {
         fail(1, magic);
     }
