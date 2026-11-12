@@ -113,7 +113,7 @@ and spins with the LEDs showing an error.
 | `dcache` | 8 KB direct mapped, 16-byte lines, write-through with a one-word write buffer, no write allocate, over SRAM and SDRAM |
 | `membus` | routes cache fills, write-throughs and uncached accesses to the slaves |
 | `sram_ctrl` | 16-bit async SRAM, video gets priority |
-| `sdram_ctrl` | IS42S16400, CL2, burst length 1, auto refresh |
+| `sdram_ctrl` | IS42S16400, CL2, burst length 1, one open row per bank (hits skip the activate), auto refresh |
 | `flash_ctrl` | 8-bit NOR reads |
 | `video` | VGA timing, line prefetch, palette |
 | `ps2_rx` | PS/2 byte receiver into a FIFO |

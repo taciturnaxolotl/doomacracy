@@ -171,18 +171,31 @@ static uint32_t *ic_tag, *dc_tag;
 static uint64_t tcycles, ic_miss, dc_miss, dc_rd;
 static uint64_t wb_free_at;          /* cycle the write buffer is empty */
 
+/* SDRAM keeps one row open per bank (rtl/sdram_ctrl.vhd): a hit skips the
+   activate, a miss pays a precharge and an activate */
+static int32_t sd_row[4] = { -1, -1, -1, -1 };
+static int sd_row_cost(uint32_t a)
+{
+    uint32_t hw = (a & 0x7fffff) >> 1, bank = (hw >> 8) & 3;
+    int32_t row = (int32_t)(hw >> 10);
+    if (sd_row[bank] == row) return 0;
+    int c = sd_row[bank] < 0 ? 2 : 4;
+    sd_row[bank] = row;
+    return c;
+}
 static int fill_cost(uint32_t a)     /* cycles for a 16-byte line fill */
 {
     switch (a >> 28) {
     case 0x0: return 6;
     case 0x1: return 12;             /* 8 halfwords + issue + bus */
-    case 0x2: return 18;             /* act, 8 reads, CL, precharge */
+    case 0x2: case 0x8: return 12 + sd_row_cost(a);  /* 8 reads, CL, drain */
     default:  return 30;
     }
 }
 static int write_cost(uint32_t a)
 {
-    return (a >> 28) == 0x1 ? 5 : 10;
+    if ((a >> 28) == 0x1) return 5;
+    return 4 + sd_row_cost(a);       /* 2 writes, ack, bus */
 }
 static void timing_init(void)
 {
@@ -203,7 +216,7 @@ static inline void t_fetch(uint32_t a)
 }
 static inline void t_load(uint32_t a)
 {
-    if ((a >> 28) != 1 && (a >> 28) != 2) {        /* uncached */
+    if ((a >> 28) != 1 && (a >> 28) != 2 && (a >> 28) != 8) {        /* uncached */
         if (tcycles < wb_free_at) tcycles = wb_free_at;
         tcycles += (a >> 28) == 3 ? 28 : 3;
         return;
@@ -219,7 +232,7 @@ static inline void t_load(uint32_t a)
 }
 static inline void t_store(uint32_t a)
 {
-    if ((a >> 28) != 1 && (a >> 28) != 2) {
+    if ((a >> 28) != 1 && (a >> 28) != 2 && (a >> 28) != 8) {
         if (tcycles < wb_free_at) tcycles = wb_free_at;
         tcycles += 3;
         return;
@@ -1034,7 +1047,7 @@ static void stats(void)
         fprintf(stderr, "lowest sp in SRAM:    %08x\n", min_sp);
     if (kq_n)
         fprintf(stderr, "kbd: %d of %d scripted bytes delivered, %d in FIFO, ps2_ie %d, plic en %u prio %u claimed %u\n",
-                kq_head, kq_n, kf_n, ps2_ie, plic_en, plic_prio, plic_claimed);
+                (int)kq_head, (int)kq_n, kf_n, ps2_ie, plic_en, plic_prio, plic_claimed);
     if (kbd_dropped)
         fprintf(stderr, "kbd bytes dropped (FIFO full): %llu\n", (unsigned long long)kbd_dropped);
     fprintf(stderr, "LEDR=%03x LEDG=%02x HEX=%04x FB_BASE=%05x\n", ledr, ledg, hex, fb_base);

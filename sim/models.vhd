@@ -121,8 +121,21 @@ begin
         variable w      : unsigned(15 downto 0);
         variable rd1    : integer := -1;
         variable mode_ok : boolean := false;
-        variable act_t  : time := 0 ns;
         variable first  : boolean := true;
+        -- per-bank timing: last ACTIVATE, PRECHARGE, WRITE; last REFRESH
+        type times_t is array (0 to 3) of time;
+        variable t_act, t_pre, t_wr : times_t := (others => -1 sec);
+        variable t_ref  : time := -1 sec;
+        variable bk     : integer range 0 to 3;
+        procedure close_bank(n : integer) is
+        begin
+            if row(n) /= -1 then
+                assert now - t_act(n) >= 42 ns report "SDRAM tRAS violated" severity error;
+                assert now - t_wr(n) >= 30 ns report "SDRAM tWR violated" severity error;
+            end if;
+            row(n) := -1;
+            t_pre(n) := now;
+        end procedure;
     begin
         if first then
             dq <= (others => 'Z');
@@ -143,15 +156,19 @@ begin
             cmd := ras_n & cas_n & we_n;
             case cmd is
                 when "011" =>    -- ACTIVE
-                    assert row(to_integer(unsigned(ba))) = -1
+                    bk := to_integer(unsigned(ba));
+                    assert row(bk) = -1
                         report "SDRAM activate on an open bank" severity error;
-                    row(to_integer(unsigned(ba))) := to_integer(unsigned(a));
-                    act_t := now;
+                    assert now - t_pre(bk) >= 20 ns report "SDRAM tRP violated" severity error;
+                    assert now - t_act(bk) >= 63 ns report "SDRAM tRC violated" severity error;
+                    assert now - t_ref >= 63 ns report "SDRAM tRC after refresh violated" severity error;
+                    row(bk) := to_integer(unsigned(a));
+                    t_act(bk) := now;
                 when "101" | "100" =>   -- READ / WRITE
                     assert mode_ok report "SDRAM access before mode set" severity error;
                     assert row(to_integer(unsigned(ba))) /= -1
                         report "SDRAM access to a closed bank" severity error;
-                    assert now - act_t >= 20 ns report "SDRAM tRCD violated" severity error;
+                    assert now - t_act(to_integer(unsigned(ba))) >= 20 ns report "SDRAM tRCD violated" severity error;
                     i := (row(to_integer(unsigned(ba))) * 4 + to_integer(unsigned(ba))) * 256
                          + to_integer(unsigned(a(7 downto 0)));
                     if cmd = "101" then
@@ -161,18 +178,22 @@ begin
                         if dqm(0) = '0' then w(7 downto 0)  := unsigned(dq(7 downto 0)); end if;
                         if dqm(1) = '0' then w(15 downto 8) := unsigned(dq(15 downto 8)); end if;
                         mem(i) := to_integer(w);
+                        t_wr(to_integer(unsigned(ba))) := now;
                     end if;
-                    if a(10) = '1' then
-                        row(to_integer(unsigned(ba))) := -1;
-                    end if;
+                    assert a(10) = '0' report "SDRAM auto-precharge not modelled" severity error;
                 when "010" =>    -- PRECHARGE
                     if a(10) = '1' then
-                        row := (others => -1);
+                        for n in 0 to 3 loop close_bank(n); end loop;
                     else
-                        row(to_integer(unsigned(ba))) := -1;
+                        close_bank(to_integer(unsigned(ba)));
                     end if;
                 when "001" =>    -- REFRESH
                     assert row = (0 to 3 => -1) report "SDRAM refresh with a bank open" severity error;
+                    for n in 0 to 3 loop
+                        assert now - t_pre(n) >= 20 ns report "SDRAM tRP before refresh violated" severity error;
+                    end loop;
+                    assert now - t_ref >= 63 ns report "SDRAM tRC between refreshes violated" severity error;
+                    t_ref := now;
                 when "000" =>    -- MODE
                     assert a(6 downto 4) = "010" and a(2 downto 0) = "000"
                         report "SDRAM mode is not CL2 BL1" severity error;
