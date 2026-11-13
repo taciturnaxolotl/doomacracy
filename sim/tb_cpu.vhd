@@ -1,6 +1,8 @@
 -- CPU against an ideal 64 KB memory with uneven latencies on both ports.
 -- Loads a hex image (one 32-bit word per line), prints stores to 0xF0000000
--- as characters, stops on ebreak.
+-- as characters, stops on ebreak. The instruction side reads the word at
+-- i_raddr, as the I-cache RAM does: the CPU may move its fetch address
+-- before an ack, and an ack is for the address it holds in that cycle.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -16,7 +18,7 @@ architecture sim of tb_cpu is
     signal reset : std_logic := '1';
     signal done  : boolean := false;
 
-    signal i_prime, i_req, i_ack, d_prime, d_req, d_we, d_ack, halted, retire : std_logic;
+    signal i_prime, i_req, i_ack, d_req, d_we, d_ack, halted, retire : std_logic;
     signal i_raddr, i_addr, i_rdata, d_raddr, d_addr, d_wdata, d_rdata : std_logic_vector(31 downto 0);
     signal d_wstrb : std_logic_vector(3 downto 0);
     signal retire_pc, retire_data : std_logic_vector(31 downto 0);
@@ -44,7 +46,7 @@ begin
 
     dut : entity work.cpu
         port map (clk, reset, i_prime, i_raddr, i_req, i_addr, i_ack, i_rdata,
-                  d_prime, d_raddr, d_req, d_addr, d_we, d_wstrb, d_wdata, d_ack, d_rdata,
+                  d_raddr, d_req, d_addr, d_we, d_wstrb, d_wdata, d_ack, d_rdata, '1',
                   open, '0', '0', '0', (63 downto 0 => '0'), '0',
                   halted, retire, retire_pc, retire_rd, retire_data);
 
@@ -76,7 +78,7 @@ begin
             end if;
             if ibusy then
                 if iwait = 0 then
-                    a := to_integer(unsigned(i_addr(15 downto 2)));
+                    a := to_integer(unsigned(i_raddr(15 downto 2)));  -- next cycle's i_addr
                     i_rdata <= mem(a);
                     i_ack <= '1';
                     ibusy := false;

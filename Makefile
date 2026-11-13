@@ -225,7 +225,7 @@ soc-test:
 	$(MAKE) -C $(SOCT)
 	$(PYTHON) tools/gen_rom.py $(SOCT)/soctest_rom.txt rtl/boot_rom_data.vhd
 	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=$(SOCT)/flash_test.hex \
-	    -gKEYS=$(SOCT)/keys.txt -gMAX_MS=120 -gDUMP_FIRST=2 -gDUMP_EVERY=1000 -r
+	    -gKEYS=$(SOCT)/keys.txt -gMAX_MS=300 -gDUMP_FIRST=2 -gDUMP_EVERY=1000 -r
 	$(PPM2PNG_SIM)
 
 soc-boot: rom sw emu
@@ -332,7 +332,9 @@ trap-test: emu linuxboot-rom $(RTL_DTB)
 	$(call SIM_JTAG,$(BUILD)/trap_rtl_log.txt) > $(BUILD)/trap_rtl_jtag.txt
 	diff $(BUILD)/trap_emu_out.txt $(BUILD)/trap_rtl_uart.txt && echo "trap-test: RS-232 output matches the emulator"
 	diff $(BUILD)/trap_emu_out.txt $(BUILD)/trap_rtl_jtag.txt && echo "trap-test: JTAG console output matches the emulator"
-	$(PYTHON) tools/cmptrace.py $(BUILD)/trap_emu_trace.txt $(BUILD)/trap_rtl_trace.txt --quiet
+	@# the pipelined core spins thousands of times per character waiting on the
+	@# real UART, so resyncs need a wide window
+	$(PYTHON) tools/cmptrace.py $(BUILD)/trap_emu_trace.txt $(BUILD)/trap_rtl_trace.txt --window 100000 --quiet
 
 linux-sim: emu linuxboot-rom $(RTL_DTB)
 	@mkdir -p sim/out

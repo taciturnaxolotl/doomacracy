@@ -108,9 +108,9 @@ and spins with the LEDs showing an error.
 
 | block | job |
 | --- | --- |
-| `cpu` | RV32IM multicycle core; separate instruction and data ports |
-| `icache` | 8 KB direct mapped, 16-byte lines, over ROM, SRAM and SDRAM |
-| `dcache` | 8 KB direct mapped, 16-byte lines, write-through with a one-word write buffer, no write allocate, over SRAM and SDRAM |
+| `cpu` | RV32IMA five stage pipeline (IF, ID, EX, MEM, WB) with forwarding, static branch prediction and a return stack; separate instruction and data ports |
+| `icache` | 8 KB direct mapped, 16-byte lines, next-line prefetch, over ROM, SRAM and SDRAM |
+| `dcache` | 8 KB direct mapped, 16-byte lines, write-through with a four-word write buffer, no write allocate, over SRAM and SDRAM |
 | `membus` | routes cache fills, write-throughs and uncached accesses to the slaves |
 | `sram_ctrl` | 16-bit async SRAM, video gets priority |
 | `sdram_ctrl` | IS42S16400, CL2, burst length 1, one open row per bank (hits skip the activate), auto refresh |
@@ -124,10 +124,16 @@ and spins with the LEDs showing an error.
 ## Performance
 
 From the emulator's cycle model of this RTL (`--timing`), on `-timedemo
-demo1`: about 1.28M instructions per frame at CPI 3.0, so roughly 13 fps.
-Cache size barely matters (4 KB to 32 KB each moves it from 12 to 14 fps);
-what limits it is the multicycle core itself, 2 cycles per instruction and 3
-per load or store. A pipelined core is the next big win.
+demo1`: CPI about 2.0, against 3.2 for the multicycle core it replaced
+(roughly 22 fps where that one made 16). In RTL simulation the pipeline
+boots Linux about 1.35 times as fast and gets through Doom's startup about
+1.4 times as fast; both of those lean on SDRAM and flash more than the
+game loop does.
+
+A taken branch or JAL costs one bubble, a return the return stack got
+right one, a wrong guess or any other JALR three. A load followed by its
+use costs one, MUL four cycles in EX and DIV about 34. CSR and SYSTEM
+instructions wait for the pipeline to drain.
 
 ## JTAG flash loader
 

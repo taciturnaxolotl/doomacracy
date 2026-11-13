@@ -169,15 +169,22 @@ static void fault(uint32_t cause, uint32_t tval, const char *fmt, ...)
 }
 
 /* ---------------------------------------------------------------- timing
- * Optional cycle model of the RTL (--timing): direct-mapped I and D caches
- * with 16-byte lines, write-through with a one-entry write buffer, and the
- * miss/burst costs of the VHDL controllers. Approximate, but it tracks the
- * things that dominate: hit rates and memory latency. */
+ * Optional cycle model of the RTL (--timing): the pipelined core (one
+ * instruction a cycle, with the bubbles of rtl/cpu.vhd), direct-mapped I and
+ * D caches with 16-byte lines and next-line I prefetch, write-through with a
+ * four-entry write buffer, and the miss/burst costs of the VHDL controllers.
+ * Approximate, but it tracks the things that dominate: hit rates, memory
+ * latency and branch bubbles. */
 static int timing = 0;
 static int ic_bits = 8, dc_bits = 8;
 static uint32_t *ic_tag, *dc_tag;
-static uint64_t tcycles, ic_miss, dc_miss, dc_rd;
+static uint64_t tcycles, ic_miss, dc_miss, dc_rd, t_mispredict;
+#define WB_DEPTH 4
+static uint64_t wb_done[WB_DEPTH];   /* when each buffered store reaches memory */
+static int wb_n;
 static uint64_t wb_free_at;          /* cycle the write buffer is empty */
+static uint32_t t_ras[4], t_ras_top; /* the core's return stack */
+static uint32_t t_load_rd;           /* rd of the previous instruction if it was a load */
 
 /* SDRAM keeps one row open per bank (rtl/sdram_ctrl.vhd): a hit skips the
    activate, a miss pays a precharge and an activate */
@@ -217,10 +224,19 @@ static inline void t_fetch(uint32_t a)
     uint32_t line = a >> 4, idx = line & ((1u << ic_bits) - 1);
     if (ic_tag[idx] != line << 1) {
         ic_miss++;
-        if (tcycles < wb_free_at) tcycles = wb_free_at;
         tcycles += 2 + fill_cost(a);
         ic_tag[idx] = line << 1;
+        /* the next line follows in the background */
+        uint32_t nidx = (line + 1) & ((1u << ic_bits) - 1);
+        ic_tag[nidx] = (line + 1) << 1;
     }
+}
+static inline void wb_retire(void)    /* drop stores that reached memory */
+{
+    int k = 0;
+    for (int i = 0; i < wb_n; i++)
+        if (wb_done[i] > tcycles) wb_done[k++] = wb_done[i];
+    wb_n = k;
 }
 static inline void t_load(uint32_t a)
 {
@@ -232,6 +248,7 @@ static inline void t_load(uint32_t a)
     uint32_t line = a >> 4, idx = line & ((1u << dc_bits) - 1);
     dc_rd++;
     if (dc_tag[idx] != line << 1) {
+        tcycles++;                   /* the hit check that missed */
         dc_miss++;
         if (tcycles < wb_free_at) tcycles = wb_free_at;
         tcycles += 2 + fill_cost(a);
@@ -245,8 +262,66 @@ static inline void t_store(uint32_t a)
         tcycles += 3;
         return;
     }
-    if (tcycles < wb_free_at) tcycles = wb_free_at;  /* buffer full: stall */
-    wb_free_at = tcycles + 1 + write_cost(a);
+    wb_retire();
+    if (wb_n == WB_DEPTH) {          /* buffer full: wait for the oldest */
+        tcycles = wb_done[0];
+        wb_retire();
+    }
+    uint64_t start = wb_free_at > tcycles ? wb_free_at : tcycles;
+    wb_free_at = start + write_cost(a);
+    wb_done[wb_n++] = wb_free_at;
+}
+/* per instruction, before it executes: a and b are rs1 and rs2 */
+static void t_instr(uint32_t pc, uint32_t ins, uint32_t a, uint32_t b)
+{
+    uint32_t op = ins & 0x7f, rd = (ins >> 7) & 31, rs1 = (ins >> 15) & 31, rs2 = (ins >> 20) & 31;
+    uint32_t f3 = (ins >> 12) & 7;
+    int uses2 = op == 0x63 || op == 0x23 || op == 0x33 || op == 0x2f;
+    t_fetch(pc);
+    tcycles += 1;
+    if (t_load_rd && (t_load_rd == rs1 || (uses2 && t_load_rd == rs2)) && op != 0x37 && op != 0x17 && op != 0x6f)
+        tcycles += 1;                /* load-use */
+    t_load_rd = (op == 0x03 || op == 0x2f) ? rd : 0;
+    int link = rd == 1 || rd == 5, ret = op == 0x67 && rd == 0 && (rs1 == 1 || rs1 == 5);
+    switch (op) {
+    case 0x6f:                       /* JAL: predicted in ID */
+        tcycles += 1;
+        if (link) t_ras[++t_ras_top & 3] = pc + 4;
+        break;
+    case 0x67: {                     /* JALR: only a correct return is cheap */
+        uint32_t t = (a + (uint32_t)((int32_t)ins >> 20)) & ~1u;
+        if (ret && t_ras[t_ras_top & 3] == t) tcycles += 1;
+        else { tcycles += 3; t_mispredict++; }
+        if (ret) t_ras_top--;
+        if (link) t_ras[++t_ras_top & 3] = pc + 4;
+        break;
+    }
+    case 0x63: {                     /* branches: backward predicted taken */
+        int taken;
+        switch (f3) {
+        case 0: taken = a == b; break;
+        case 1: taken = a != b; break;
+        case 4: taken = (int32_t)a < (int32_t)b; break;
+        case 5: taken = (int32_t)a >= (int32_t)b; break;
+        case 6: taken = a < b; break;
+        default: taken = a >= b; break;
+        }
+        int pred = (int32_t)ins < 0;
+        if (taken != pred) { tcycles += 3; t_mispredict++; }
+        else if (taken) tcycles += 1;
+        break;
+    }
+    case 0x33:
+        if ((ins >> 25) == 1) tcycles += (ins & 0x4000) ? 33 : 3;
+        break;
+    case 0x73:                       /* serialised; writes and MRET refetch */
+        tcycles += 2;
+        if (ins == 0x30200073 || ((f3 & 3) && (f3 == 1 || f3 == 5 || rs1 != 0))) tcycles += 3;
+        break;
+    case 0x0f:
+        if (f3 == 1) { tcycles += 5; if (tcycles < wb_free_at) tcycles = wb_free_at; }
+        break;
+    }
 }
 
 
@@ -794,15 +869,9 @@ static int run_inner(void)
         }
         uint32_t ins = fetch(pc);
         uint32_t op = ins & 0x7f;
-        if (timing) {
-            /* base cost: 2 per instruction (exec + fetch); loads/stores 3;
-               mul 4 extra; div 33 extra; taken jumps the same as others */
-            t_fetch(pc);
-            tcycles += 2;
-            if (op == 0x03 || op == 0x23) tcycles += 1;
-            else if (op == 0x33 && (ins >> 25) == 1) tcycles += (ins & 0x4000) ? 34 : 3;
-        }
         uint32_t rd = (ins >> 7) & 31, rs1 = (ins >> 15) & 31, rs2 = (ins >> 20) & 31;
+        if (timing)
+            t_instr(pc, ins, x[rs1], x[rs2]);
         uint32_t f3 = (ins >> 12) & 7, f7 = ins >> 25;
         uint32_t a = x[rs1], b = x[rs2];
         uint32_t npc = pc + 4, val = 0;
@@ -1037,9 +1106,10 @@ static void stats(void)
             (unsigned long long)cycles(), secs);
     fprintf(stderr, "vga frames:           %llu\n", (unsigned long long)frame_count());
     if (timing)
-        fprintf(stderr, "timing: CPI %.2f, icache %u B miss %.3f%%, dcache %u B read miss %.3f%%\n",
+        fprintf(stderr, "timing: CPI %.2f, icache %u B miss %.3f%%, dcache %u B read miss %.3f%%, "
+                "mispredicts %.3f%%\n",
                 (double)tcycles / instret, 16u << ic_bits, 100.0 * ic_miss / instret,
-                16u << dc_bits, dc_rd ? 100.0 * dc_miss / dc_rd : 0.0);
+                16u << dc_bits, dc_rd ? 100.0 * dc_miss / dc_rd : 0.0, 100.0 * t_mispredict / instret);
     fprintf(stderr, "region   loads        stores\n");
     for (i = 0; i < R_N; i++)
         fprintf(stderr, "%-6s %12llu %12llu\n", rname[i],

@@ -66,7 +66,7 @@ architecture rtl of doomacracy is
     signal dram_ready : std_logic;
 
     -- CPU ports
-    signal ci_prime, ci_req, ci_ack, cd_prime, cd_req, cd_we, cd_ack : std_logic;
+    signal ci_prime, ci_req, ci_ack, cd_req, cd_we, cd_ack : std_logic;
     signal ci_raddr, ci_addr, ci_rdata, cd_raddr, cd_addr, cd_wdata, cd_rdata : std_logic_vector(31 downto 0);
     signal cd_wstrb : std_logic_vector(3 downto 0);
     signal halted, retire : std_logic;
@@ -108,6 +108,7 @@ architecture rtl of doomacracy is
     signal jt_data : std_logic_vector(31 downto 0);
     signal con_tx_we, con_tx_full, con_rx_avail, con_rx_pop, con_attached : std_logic;
     signal con_tx_data, con_rx_data : std_logic_vector(7 downto 0);
+    signal cd_wbe : std_logic;
     signal ci_inval, mtip, msip, meip, poweroff, reboot : std_logic;
     signal mtime : std_logic_vector(63 downto 0);
 
@@ -158,7 +159,7 @@ begin
     core : entity work.cpu
         generic map (TRACE => TRACE, TRACE_MAX => TRACE_MAX)
         port map (clk, cpu_reset, ci_prime, ci_raddr, ci_req, ci_addr, ci_ack, ci_rdata,
-                  cd_prime, cd_raddr, cd_req, cd_addr, cd_we, cd_wstrb, cd_wdata, cd_ack, cd_rdata,
+                  cd_raddr, cd_req, cd_addr, cd_we, cd_wstrb, cd_wdata, cd_ack, cd_rdata, cd_wbe,
                   ci_inval, mtip, msip, meip, mtime, poweroff,
                   halted, retire, retire_pc, retire_rd, retire_data);
 
@@ -169,7 +170,7 @@ begin
 
     dc : entity work.dcache
         generic map (IB => 9)
-        port map (clk, cpu_reset, cd_prime, cd_raddr, cd_req, cd_addr, cd_we, cd_wstrb, cd_wdata, cd_ack, cd_rdata,
+        port map (clk, cpu_reset, cd_raddr, cd_req, cd_addr, cd_we, cd_wstrb, cd_wdata, cd_ack, cd_rdata, cd_wbe,
                   dm_req, dm_addr, dm_we, dm_wstrb, dm_wdata, dm_burst, dm_ack, m_rdata);
 
     bus0 : entity work.membus

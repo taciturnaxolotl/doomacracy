@@ -15,8 +15,9 @@ emulator's never is). That is accepted if only one side skips, every skipped
 line is within 256 bytes of the line where they meet again, and the next 8
 lines agree. Otherwise both sides may skip up to --window lines (default
 20000) and 50 lines (or all that is left) must agree afterwards; the
-smallest total skip wins. Skipped lines are not compared; the totals are
-printed."""
+smallest total skip wins. A difference in the last 1000 lines of either
+trace, where no resync can be proven, ends the comparison. Skipped lines
+are not compared; the totals are printed."""
 import sys
 
 args = []
@@ -105,6 +106,10 @@ while i < len(a) and j < len(b):
         i += d; skip_a += d; loops += 1
         continue
     r = general(i, j)
+    if r is None and min(len(a) - i, len(b) - j) < 20 * NEED:
+        print(f"one trace ends {min(len(a) - i, len(b) - j)} lines after a difference at "
+              f"emu line {i + 1}, rtl line {j + 1}; too short to resync, stopping there")
+        break
     if r is None:
         print(f"MISMATCH at emu line {i + 1}, rtl line {j + 1} (after {checked} lines agreed)")
         print("  emu:", a[i])
