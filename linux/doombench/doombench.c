@@ -12,6 +12,8 @@
  *
  *   doombench        all tests
  *   doombench -q     shorter runs
+ *
+ * The table fits the 53x25 framebuffer console (there is no pager).
  */
 #include <stdint.h>
 #include <stdio.h>
@@ -36,6 +38,7 @@ static volatile uint32_t sink;  /* keeps results alive */
 
 struct mark { uint64_t us; uint32_t cyc, ins; };
 static struct mark start;
+static double total_cyc, total_secs;   /* for the clock estimate at the end */
 
 static void begin(void)
 {
@@ -53,8 +56,10 @@ static void end(const char *name, double work, const char *unit)
     double secs = us / 1e6;
     if (secs <= 0)
         secs = 1e-6;
-    printf("%-16s %7.1f ms  %8.2f %-6s CPI %5.2f  %4.1f MHz\n", name, us / 1000.0,
-           work / secs, unit, ins ? (double)cyc / ins : 0.0, cyc / secs / 1e6);
+    total_cyc += cyc;
+    total_secs += secs;
+    printf("%-12s%7.0f %8.2f %-5s %5.2f\n", name, us / 1000.0,
+           work / secs, unit, ins ? (double)cyc / ins : 0.0);
 }
 
 /* ---------------------------------------------------------------- tests */
@@ -169,7 +174,7 @@ static void t_chase(uint32_t *buf, uint32_t bytes, const char *name)
     {
         uint32_t cyc = rd_cycle() - start.cyc;
         uint64_t us = now_us() - start.us;
-        printf("%-16s %7.1f ms  %8.1f ns    %5.1f cycles per load\n", name, us / 1000.0,
+        printf("%-12s%7.0f %8.0f ns    %5.1f cyc\n", name, us / 1000.0,
                us * 1000.0 / n, (double)cyc / n);
     }
 }
@@ -202,7 +207,7 @@ static void t_spawn(const char *self)
     }
     end("spawn", ok, "/s");
     if (ok != n)
-        printf("  (%u of %u spawns failed: not enough contiguous memory)\n", n - ok, n);
+        printf("  %u of %u spawns failed (no memory)\n", n - ok, n);
 }
 
 int main(int argc, char **argv)
@@ -222,8 +227,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    printf("doombench  (work x%d)\n", scale);
-    printf("test                time      rate           CPI    cycle clock\n");
+    printf("doombench x%d     ms     rate        CPI\n", scale);
     t0 = now_us();
     t_alu();
     t_mul();
@@ -234,10 +238,11 @@ int main(int argc, char **argv)
     t_write(a, 4 * 1024, "write 4K");
     t_write(a, 128 * 1024, "write 128K");
     t_memcpy((uint8_t *)a, (uint8_t *)b, 64 * 1024);
-    t_chase(a, 4 * 1024, "latency 4K");
-    t_chase(a, 128 * 1024, "latency 128K");
+    t_chase(a, 4 * 1024, "lat 4K");
+    t_chase(a, 128 * 1024, "lat 128K");
     t_syscall();
     t_spawn(argv[0][0] == '/' ? argv[0] : "/usr/bin/doombench");
-    printf("total %.1f s\n", (now_us() - t0) / 1e6);
+    printf("total %.1f s, cycle counter %.1f MHz\n", (now_us() - t0) / 1e6,
+           total_secs > 0 ? total_cyc / total_secs / 1e6 : 0.0);
     return 0;
 }

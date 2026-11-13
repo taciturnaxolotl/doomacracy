@@ -57,3 +57,34 @@ out of memory; prefer shell builtins where you can.
 Programs of your own are built the same way: the buildroot cross gcc with
 `-fPIC -Wl,-elf2flt="-r -s STACK"`, and delete the `.gdb` file elf2flt
 leaves next to the binary.
+
+## doombench
+
+`doombench` (`-q` for a quicker run) times a set of small tests and prints,
+for each, the wall time, a rate, and the real cycles per instruction from
+the CPU's own `cycle` and `instret` counters: integer ALU, multiply, divide,
+`qsort`, reads and writes inside the D-cache (4K) and well beyond it (128K),
+`memcpy`, load latency for a dependent pointer chase (cycles per hop,
+including the loop), a system call, and starting a process. The last line
+checks the cycle counter against the wall clock (it should read 50 MHz).
+The table fits the 53x25 screen, since there is no pager.
+
+In the emulator with `--timing` the same table comes from the RTL cycle
+model, so the two can be compared row by row. Model, at 50 MHz:
+
+```
+doombench x1     ms     rate        CPI
+alu             209    14.36 Mop/s  2.05
+mul              34     3.71 M/s    2.65
+div              45     1.11 M/s    9.99
+qsort 1K         78    39.21 Kel/s  2.60
+read 4K          71    28.07 MB/s   2.42
+read 128K       111    18.03 MB/s   3.72
+write 4K         66    30.41 MB/s   3.49
+write 128K       67    29.86 MB/s   3.52
+memcpy 64K       86    11.61 MB/s   3.46
+lat 4K           14      279 ns     13.9 cyc
+lat 128K         34      673 ns     33.5 cyc
+syscall          75    66.62 K/s    2.93
+spawn           147    54.57 /s     5.21
+```
