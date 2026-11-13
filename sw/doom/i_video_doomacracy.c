@@ -105,7 +105,7 @@ void I_FinishUpdate(void)
     // The buffer we are about to overwrite was the displayed one until the
     // last flip; FB_BASE is latched once per VGA frame, so make sure a frame
     // boundary has passed since then. Rendering a frame normally takes much
-    // longer than 16.7 ms, so this rarely waits.
+    // longer than 14.4 ms, so this rarely waits.
     while (FRAME_COUNT == flip_frame)
     {
     }

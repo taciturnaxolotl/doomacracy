@@ -13,7 +13,7 @@ Quartus.
 | toolchain | Quartus II 8.1 Web Edition (13.0 SP1 also works), nvc for sim; the JTAG Tcl scripts are Tcl 8.4 |
 | system clock | 50 MHz `CLOCK_50`, one clock domain |
 | CPU | RV32IMA with Zicsr, M and U modes, timer and software interrupts (see Linux platform) |
-| video | 320x200 8 bpp from SRAM, doubled to 640x400 inside 640x480 @ 60 Hz |
+| video | 320x200 8 bpp from SRAM, doubled to 640x400 @ 70 Hz (the monitor stretches it to 4:3) |
 | input | PS/2 keyboard, raw scancode bytes to software |
 | software | doomgeneric, `riscv32-none-elf-gcc` + newlib, `-march=rv32im -mabi=ilp32` |
 
@@ -95,8 +95,12 @@ and spins with the LEDs showing an error.
 
 ## Video
 
-- 640x480 @ 60 Hz timing (25 MHz pixel enable from the 50 MHz clock).
-- Rows 40..439 show the framebuffer, each source pixel 2x2. Everything else is black.
+- 640x400 @ 70 Hz timing, the VGA mode DOS Doom ran in (25 MHz pixel enable from
+  the 50 MHz clock; 800 x 449 total, hsync negative, vsync positive). A frame is
+  718,400 clock cycles, 69.6 Hz.
+- All 400 rows show the framebuffer, each source pixel 2x2. The monitor
+  stretches the 400 lines over its 4:3 screen, which is the aspect Doom's art
+  was drawn for.
 - Each 320-byte source line is prefetched from SRAM into an M4K line buffer while
   the previous line is on screen. Video wins SRAM arbitration.
 - Palette: 256 x 12-bit M4K, written through `PALETTE`.

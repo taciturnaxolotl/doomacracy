@@ -1,8 +1,11 @@
--- 640x480 @ 60 Hz out of the 50 MHz clock (pixel every other cycle).
+-- 640x400 @ 70 Hz out of the 50 MHz clock (pixel every other cycle): the
+-- VGA mode DOS Doom ran in, double scanned. 800 x 449 total, hsync negative,
+-- vsync positive (the polarities are how a monitor tells it from 640x480).
+-- The monitor stretches the 400 lines over its 4:3 screen.
 -- Shows a 320x200 framebuffer from SRAM (8 bpp through the palette, or
--- RGB565 when mode16 is set), each pixel 2x2, on VGA rows
--- 40..439. Each source line is fetched into one half of a two-line buffer
--- while the other half is on screen.
+-- RGB565 when mode16 is set), each pixel 2x2, filling all 400 rows. Each
+-- source line is fetched into one half of a two-line buffer while the other
+-- half is on screen.
 library ieee;
 use ieee.std_logic_1164.all;
 use ieee.numeric_std.all;
@@ -53,7 +56,7 @@ architecture rtl of video is
     -- display pipeline: line buffer read, palette read, output register
     signal act0, act1, act2 : std_logic := '0';
     signal hs0, hs1, hs2    : std_logic := '1';
-    signal vs0, vs1, vs2    : std_logic := '1';
+    signal vs0, vs1, vs2    : std_logic := '0';
     signal hi1              : std_logic := '0';
     signal src_row          : unsigned(9 downto 0);
     signal shown            : std_logic;
@@ -66,9 +69,9 @@ begin
         generic map (8, 12)
         port map (clk, pal_we, pal_idx, pal_rgb, pal_ra, pal_q);
 
-    -- source line on screen now: (v - 40) / 2
-    src_row <= v - 40;
-    shown   <= '1' when h < 640 and v >= 40 and v < 440 else '0';
+    -- source line on screen now: v / 2
+    src_row <= v;
+    shown   <= '1' when h < 640 and v < 400 else '0';
 
     lb_we <= v_ack;
     lb_wa <= std_logic_vector(f_line(0) & f_count);
@@ -82,6 +85,8 @@ begin
     v_addr <= std_logic_vector(f_addr);
 
     process (clk)
+        -- source line to fetch next; 10 bits so that 320 fits the multiply
+        variable nl : unsigned(9 downto 0);
     begin
         if rising_edge(clk) then
             pix_en <= not pix_en;
@@ -90,26 +95,33 @@ begin
             if pix_en = '1' then
                 if h = 799 then
                     h <= (others => '0');
-                    if v = 524 then
+                    if v = 448 then
                         v <= (others => '0');
                     else
                         v <= v + 1;
                     end if;
-                    -- start of a VGA line: on odd lines 39..437 fetch the
-                    -- source line that goes on screen at the next line
-                    if v >= 38 and v <= 436 and v(0) = '0' then
+                    -- start of a VGA line: source line k goes on screen at
+                    -- line 2k and is fetched during the line before it.
+                    -- That is the last line of the frame (448) for line 0
+                    -- and the odd lines 1..397 for the rest.
+                    if v = 447 or (v <= 396 and v(0) = '0') then
+                        if v = 447 then
+                            nl := (others => '0');
+                        else
+                            nl := shift_right(v, 1) + 1;
+                        end if;
                         fetching <= '1';
-                        f_line   <= resize(shift_right(v + 1 - 39, 1), 8);
+                        f_line   <= nl(7 downto 0);
                         f_count  <= (others => '0');
                         if m16 = '1' then
-                            f_addr <= base + resize(shift_right(v + 1 - 39, 1) * 320, 18);
+                            f_addr <= base + resize(nl * 320, 18);
                         else
-                            f_addr <= base + resize(shift_right(v + 1 - 39, 1) * 160, 18);
+                            f_addr <= base + resize(nl * 160, 18);
                         end if;
                     end if;
                     -- new framebuffer takes effect at the start of vertical
                     -- blank, the same moment FRAME_COUNT ticks
-                    if v = 479 then
+                    if v = 399 then
                         vblank <= '1';
                         base   <= unsigned(fb_base(18 downto 1));
                         m16    <= mode16;
@@ -131,7 +143,7 @@ begin
             -- palette, cycle 2 registers the pins
             act0 <= shown;
             if h >= 656 and h < 752 then hs0 <= '0'; else hs0 <= '1'; end if;
-            if v >= 490 and v < 492 then vs0 <= '0'; else vs0 <= '1'; end if;
+            if v >= 412 and v < 414 then vs0 <= '1'; else vs0 <= '0'; end if;
             hi1  <= h(1);
             -- RGB565 to the DAC's 4 bits per channel, one cycle behind lb_q
             -- so it lines up with the palette output

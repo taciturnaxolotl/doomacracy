@@ -132,12 +132,13 @@ begin
     -- VGA frame grabber
     process
         type row_t is array (0 to 639) of integer range 0 to 4095;
-        type frame_t is array (0 to 479) of row_t;
+        type frame_t is array (0 to 399) of row_t;
         variable fb    : frame_t;
         variable hpos  : integer := 0;
         variable vline : integer := 0;
         variable sub   : integer := 0;
-        variable hs_d, vs_d : std_logic := '1';
+        variable hs_d : std_logic := '1';
+        variable vs_d : std_logic := '0';
         variable l     : line;
         file f         : text;
         variable px    : integer;
@@ -153,17 +154,18 @@ begin
                 hpos := hpos + 1;
                 if hpos = 800 then
                     hpos  := 0;
-                    vline := (vline + 1) mod 525;
+                    vline := (vline + 1) mod 449;
                 end if;
             end if;
         end if;
-        if VGA_VS = '0' and vs_d = '1' then
-            vline := 490;
+        -- 640x400 @ 70 Hz: vsync is positive and starts on line 412
+        if VGA_VS = '1' and vs_d = '0' then
+            vline := 412;
             if frame_no >= DUMP_FIRST and (frame_no - DUMP_FIRST) mod DUMP_EVERY = 0 then
                 file_open(f, OUTDIR & "/frame_" & integer'image(frame_no) & ".ppm", write_mode);
-                write(l, string'("P3 640 480 15"));
+                write(l, string'("P3 640 400 15"));
                 writeline(f, l);
-                for y in 0 to 479 loop
+                for y in 0 to 399 loop
                     for x in 0 to 639 loop
                         px := fb(y)(x);
                         write(l, px / 256); write(l, ' ');
@@ -180,7 +182,7 @@ begin
         end if;
         hs_d := VGA_HS;
         vs_d := VGA_VS;
-        if hpos < 640 and vline < 480 and sub = 0 then
+        if hpos < 640 and vline < 400 and sub = 0 then
             fb(vline)(hpos) := to_integer(unsigned(VGA_R & VGA_G & VGA_B));
         end if;
     end process;

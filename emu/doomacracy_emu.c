@@ -12,7 +12,7 @@
  * accesses and illegal instructions are fatal and report the pc.
  *
  * Time is derived from the retired instruction count: cycles = instret * cpi.
- * TIMER_US = cycles / 50, TIMER_CYCLES = cycles, FRAME_COUNT = cycles / 833333.
+ * TIMER_US = cycles / 50, TIMER_CYCLES = cycles, FRAME_COUNT = cycles / 718400.
  *
  * Build: cc -O2 -o emu doomacracy_emu.c
  * Run "emu --help" for options.
@@ -35,7 +35,7 @@ static uint32_t sdram_size_v = 8u * 1024 * 1024;  /* --sdram-mb */
 #define FLASH_SIZE (4u * 1024 * 1024)
 
 #define CLK_HZ          50000000ull
-#define CYCLES_PER_VGA  833333ull
+#define CYCLES_PER_VGA  718400ull   /* 800 x 449 pixels, two cycles each: 69.6 Hz */
 #define PS2_BYTE_CYCLES 50000ull /* about 1 ms per PS/2 byte */
 
 #define FB_W 320

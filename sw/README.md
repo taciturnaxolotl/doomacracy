@@ -131,7 +131,7 @@ I/O. A jump to itself (`j .`) halts the run (that is what `_exit` and the
 boot ROM error path do). ecall/ebreak also stop it.
 
 Time comes from the instruction count: cycles = instret * cpi
-(`--cpi`, default 3), TIMER_US = cycles / 50, FRAME_COUNT = cycles / 833333.
+(`--cpi`, default 3), TIMER_US = cycles / 50, FRAME_COUNT = cycles / 718400.
 UART output goes to stdout (CR dropped). SWITCHES returns `--switches` with
 all KEYs released.
 
