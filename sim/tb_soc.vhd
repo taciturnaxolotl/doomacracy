@@ -22,6 +22,7 @@ entity tb_soc is
         DUMP_FIRST : integer := 0;          -- skip frames before this one
         UART_DIV   : integer := 16;
         SWITCHES   : integer := 0;          -- SW9 (512) selects the JTAG loader
+        KEY0_AT_US : integer := 0;          -- press KEY0 (reset) for 2 us at this time, 0 = never
         TRACE      : string  := "";
         TRACE_MAX  : integer := 0;
         -- SDRAM preload (raw binaries at byte offsets), e.g. a kernel and DTB
@@ -244,6 +245,19 @@ begin
                 wait for 100 us;
             end loop;
         end loop;
+        wait;
+    end process;
+
+    -- KEY0: a reset in the middle of whatever the board is doing
+    process
+    begin
+        if KEY0_AT_US > 0 then
+            wait for KEY0_AT_US * 1 us;
+            report "KEY0 pressed";
+            KEY(0) <= '0';
+            wait for 2 us;
+            KEY(0) <= '1';
+        end if;
         wait;
     end process;
 

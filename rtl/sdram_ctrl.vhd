@@ -58,7 +58,7 @@ architecture rtl of sdram_ctrl is
     constant C_MRS  : std_logic_vector(2 downto 0) := "000";
 
     type state_t is (S_POWERUP, S_INIT_PRE, S_INIT_REF, S_INIT_MRS, S_IDLE,
-                     S_REFRESH, S_ACTIVATE, S_COLS, S_DRAIN, S_PRE_ONE, S_PRE_ALL, S_DONE);
+                     S_REFRESH, S_ACTIVATE, S_COLS, S_DRAIN, S_PRE_ONE, S_PRE_ALL, S_DONE, S_RESET);
     signal state : state_t := S_POWERUP;
     signal wait_n : integer range 0 to INIT_WAIT := 0;
     signal refs   : integer range 0 to 8 := 0;
@@ -106,7 +106,7 @@ begin
     ack   <= ack_r;
     rdata <= rdata_r;
     ready <= '1' when state /= S_POWERUP and state /= S_INIT_PRE and state /= S_INIT_REF
-                      and state /= S_INIT_MRS else '0';
+                      and state /= S_INIT_MRS and state /= S_RESET else '0';
 
     hw <= unsigned(addr(22 downto 1));
 
@@ -234,6 +234,19 @@ begin
                     open_row(b) <= hw(21 downto 10);
                     state       <= S_ACTIVATE;
 
+                when S_RESET =>
+                    -- after a board reset (KEY0) the chip may still have
+                    -- rows open: close every bank once tRAS and tWR are
+                    -- safe, before anything else
+                    if wait_n = 0 then
+                        cmd     <= C_PRE;
+                        a_r(10) <= '1';
+                        wait_n  <= 1;
+                        state   <= S_PRE_ALL;
+                    else
+                        wait_n <= wait_n - 1;
+                    end if;
+
                 when S_PRE_ALL | S_REFRESH | S_DONE =>
                     if wait_n = 0 then
                         state <= S_IDLE;
@@ -292,6 +305,15 @@ begin
             if reset = '1' then
                 rd_pipe <= (others => '0');
                 open_v  <= (others => '0');
+                dq_oe   <= '0';
+                -- only once initialised: before that the init sequence
+                -- runs on its own and the chip has nothing open
+                if state /= S_POWERUP and state /= S_INIT_PRE and state /= S_INIT_REF
+                   and state /= S_INIT_MRS then
+                    cmd    <= C_NOP;
+                    wait_n <= 3;
+                    state  <= S_RESET;
+                end if;
             end if;
         end if;
     end process;

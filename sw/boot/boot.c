@@ -154,6 +154,15 @@ static NOINLINE uint32_t jtag_receive(uint32_t *buf, uint32_t max_words)
         fail(0x11, sum);
     if (JTAG_STATUS & 2)
         fail(0x12, n);
+    /* read the buffer back from SDRAM (it is far bigger than the D-cache):
+       a memory fault must stop here, not end up in the flash */
+    {
+        uint32_t back = 0;
+        for (i = 0; i < n; i++)
+            back += buf[i];
+        if (back != sum)
+            fail(0x17, back);
+    }
     return n;
 }
 

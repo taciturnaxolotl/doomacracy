@@ -141,8 +141,8 @@ Virtual JTAG instance (`rtl/vjtag_port.vhd`, 2-bit IR):
 - IR 2: a 32-bit DR capture of {overflow, words received}.
 
 Stream: `0x4A544147` ("JTAG"), word count n, n image words, their 32-bit
-sum. The boot ROM buffers the image in the top 4 MB of SDRAM and checks the
-sum. Then:
+sum. The boot ROM buffers the image in the top 4 MB of SDRAM, checks the
+sum as it arrives, then reads the buffer back from SDRAM and checks it again. Then:
 
 - SW9 alone: it compares the image with the flash 64 KB at a time and only
   touches regions that differ. In such a region every 8 KB chunk that isn't
@@ -156,7 +156,8 @@ sum. Then:
 HEX shows the phase: `1xxx` receiving, `2rr0` erasing and `3rr0` programming
 region rr, `600d` done (LEDR = regions rewritten). Errors: `E010` image too
 big, `E011` bad checksum, `E012` FIFO overflow, `E013` erase failed, `E014`
-program failed, `E015` verify mismatch, `E016` not a Linux image (RAM boot),
+program failed, `E015` verify mismatch, `E016` not a Linux image (RAM boot), `E017` the buffer read back from
+SDRAM no longer matches its checksum (a memory fault),
 each followed by a value as with `E001`.
 
 ## Linux platform

@@ -244,6 +244,21 @@ jtag-test: rom
 	$(MAKE) -C sim/jtagtest
 	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=sim/soctest/flash_test.hex -gSWITCHES=512 -gMAX_MS=60 -gDUMP_FIRST=100000 -r
 
+# KEY0 in the middle of soctest's SDRAM test: the program must start over
+# and pass, and the SDRAM chip model must see no protocol errors (rows left
+# open across a reset broke refresh and corrupted data)
+.PHONY: reset-test
+reset-test:
+	@mkdir -p sim/out
+	$(MAKE) -C $(SOCT)
+	$(PYTHON) tools/gen_rom.py $(SOCT)/soctest_rom.txt rtl/boot_rom_data.vhd
+	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=$(SOCT)/flash_test.hex -gKEY0_AT_US=4500 -gKEYS=$(SOCT)/keys.txt \
+	    -gMAX_MS=320 -gDUMP_FIRST=100000 -r > $(BUILD)/reset_test.log 2>&1 || true
+	@if grep -q "SDRAM .*\(violated\|bank\)" $(BUILD)/reset_test.log; then \
+	    grep -m3 "SDRAM" $(BUILD)/reset_test.log; echo "reset-test: SDRAM protocol errors"; exit 1; fi
+	@grep -q "^PASS" $(BUILD)/reset_test.log || { tail -5 $(BUILD)/reset_test.log; echo "reset-test: no PASS"; exit 1; }
+	@echo "reset-test: board restarted cleanly after KEY0"
+
 PPM2PNG_SIM = cd sim/out && for f in *.ppm; do [ -f "$$f" ] && $(MAGICK) $$f $${f%.ppm}.png && rm $$f; done; true
 
 # Quartus archive: everything flat in one folder, the way the lab's projects
