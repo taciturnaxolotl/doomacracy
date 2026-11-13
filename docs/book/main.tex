@@ -1,0 +1,26 @@
+% doomacracy hardware reference manual.
+% Build: make book   (from the repo root), or `latexmk -pdf main.tex` here.
+\documentclass{doomguide}
+
+\title{doomacracy}
+\subtitle{Hardware reference manual}
+\author{Kieran Klukas}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\tableofcontents
+\clearpage
+
+\input{chapters/01-overview}
+\input{chapters/02-isa}
+\input{chapters/03-pipeline}
+\input{chapters/04-alu}
+\input{chapters/05-muldiv}
+\input{chapters/06-traps}
+\input{chapters/07-memory}
+\input{chapters/08-video-io}
+\input{chapters/09-boot-software}
+
+\end{document}

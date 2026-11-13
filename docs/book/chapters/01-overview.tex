@@ -1,0 +1,117 @@
+\section{Overview}
+\label{sec:overview}
+
+doomacracy is a computer built in one Cyclone II FPGA on a Terasic DE1 board. It has a pipelined RISC-V CPU, two caches, three memory controllers, a VGA output, a PS/2 keyboard input, a UART and a JTAG link to the host. All logic uses the 50 MHz board clock. The machine runs two programs: shareware Doom on bare metal, and a Linux kernel without an MMU.
+
+This guide describes the hardware. Each section names the VHDL file that it describes. The files are in \src{rtl/}. The cycle counts come from the RTL or from the cycle model in the emulator (\src{emu/}).
+
+\subsection{Block diagram}
+
+Figure~\ref{fig:soc} shows the blocks. The CPU has an instruction port and a data port. Each port connects to an 8 KB cache. The two caches share one bus, \texttt{membus}. The bus sends each transaction to one of five slaves. Address bits 31:28 select the slave.
+
+The video block does not use the bus. It reads the framebuffer through a second port on the SRAM controller.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\small, x=1cm, y=1cm]
+    \node[blk, minimum width=2.0cm, minimum height=2.6cm] (cpu) at (0,0) {CPU\\RV32IMA\\pipeline};
+    \node[ram, minimum width=1.8cm] (ic) at (3.0,0.9)  {I-cache\\8 KB};
+    \node[ram, minimum width=1.8cm] (dc) at (3.0,-0.9) {D-cache\\8 KB};
+    \node[blk, minimum width=1.3cm, minimum height=6.6cm] (bus) at (5.7,0) {membus};
+    \draw[sig] (1.0,0.9) -- (ic.west);
+    \draw[bidir] (1.0,-0.9) -- (dc.west);
+    \draw[bidir] (ic.east) -- (5.05,0.9);
+    \draw[bidir] (dc.east) -- (5.05,-0.9);
+
+    \foreach \s/\y/\t in {rom/2.6/{boot ROM, 4 KB}, sram/1.3/{SRAM controller}, sdram/0/{SDRAM controller},
+                          flash/-1.3/{flash controller}, io/-2.6/{I/O registers}}
+      \node[blk, minimum width=2.9cm, minimum height=0.8cm] (\s) at (9.3,\y) {\t};
+    \foreach \s/\a in {rom/0x0, sram/0x1, sdram/{0x2, 0x8}, flash/0x3, io/0xF} {
+      \draw[bidir] (\s.west -| bus.east) -- (\s.west);
+      \node[above, lbl] at ($(\s.west -| bus.east)!0.5!(\s.west)$) {\texttt{\a}};
+    }
+
+    \node[blk, minimum width=1.4cm] (vid) at (12.3,1.3) {video};
+    \draw[sig] (sram.east) -- (vid.west);
+    \node[above, lbl, align=center] at (11.2,1.3) {private\\port};
+    \draw[sig] (vid.south) -- ++(0,-0.9) node[below] {VGA};
+  \end{tikzpicture}
+  \caption{The system on chip. Each bus link shows the value of address bits 31:28 that selects the slave.}
+  \label{fig:soc}
+\end{figure}
+
+\input{chapters/01a-fullblock}
+
+\subsection{Memory map}
+
+Figure~\ref{fig:memmap} shows the address space. The first hex digit of an address selects the device. Thus the bus decoder compares only four bits.
+
+The SDRAM is at two addresses. The firmware uses \texttt{0x2000\_0000}. Linux uses \texttt{0x8000\_0000}, because a RISC-V Linux kernel expects RAM at that address. The D-cache stores one tag for the two addresses of a word. A write through one address is visible through the other address.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[x=1cm, y=0.5cm, font=\small]
+    \foreach \y/\h/\name/\base/\size/\shade in {
+        0/1/boot ROM/0x0/4 KB/7,
+        1/1/SRAM/0x1/512 KB/14,
+        2/1/SDRAM/0x2/8 MB/21,
+        3/1/flash/0x3/{4 MB, read only}/7,
+        4/4/unmapped/0x4--0x7//0,
+        8/1/SDRAM (alias)/0x8/same 8 MB/21,
+        9/6/unmapped/0x9--0xE//0,
+        15/1/{I/O}/0xF/registers/14} {
+      \draw[thick, fill=black!\shade] (0,\y) rectangle (4.0,\y+\h);
+      \node at (2.0,\y+\h/2) {\name};
+      \node[left, font=\ttfamily\scriptsize] at (-0.15,\y+\h/2) {\base};
+      \node[right, font=\scriptsize] at (4.15,\y+\h/2) {\size};
+    }
+    \node[above] at (-0.7,16) {\scriptsize bits 31:28};
+  \end{tikzpicture}
+  \hspace{1.0cm}
+  \begin{tikzpicture}[x=1cm, y=0.5cm, font=\small]
+    \foreach \y/\name/\base in {
+        0/original registers/0xF000\_0000,
+        2.6/16550 console UART/0xF000\_1000,
+        5.2/{syscon (off, reboot)}/0xF000\_2000,
+        7.8/{PS/2 (Altera layout)}/0xF000\_3000,
+        10.4/CLINT (timer)/0xF100\_0000,
+        13.0/PLIC (interrupts)/0xF400\_0000} {
+      \draw[thick, fill=black!7] (0,\y) rectangle (4.0,\y+1.8);
+      \node at (2.0,\y+0.9) {\name};
+      \node[right, font=\ttfamily\scriptsize] at (4.15,\y+0.9) {\base};
+    }
+    \node[above, font=\small\itshape] at (2.0,15.0) {inside region \texttt{0xF}};
+  \end{tikzpicture}
+  \caption{The memory map. Left: the regions that address bits 31:28 select, with low addresses at the bottom. Right: the devices in the I/O region.}
+  \label{fig:memmap}
+\end{figure}
+
+Table~\ref{tab:memmap} gives the size and the use of each region.
+
+\begin{guidetable}{Memory regions}{memmap}{l l l l l}
+base & size & device & D-cache & notes \\
+\midrule
+\texttt{0x0000\_0000} & 4 KB & boot ROM (M4K) & uncached & reset vector at 0 \\
+\texttt{0x1000\_0000} & 512 KB & 16-bit async SRAM & cached & framebuffers, hot code \\
+\texttt{0x2000\_0000} & 8 MB & SDRAM & cached & cold code, heap \\
+\texttt{0x3000\_0000} & 4 MB & 8-bit NOR flash & uncached & firmware and WAD \\
+\texttt{0x8000\_0000} & 8 MB & SDRAM alias & cached & RAM for Linux \\
+\texttt{0xF000\_0000} & -- & I/O & uncached & word access only \\
+\end{guidetable}
+
+The ``D-cache'' column applies to loads and stores. The I-cache caches all instruction fetches.
+
+\subsection{FPGA resources}
+
+The EP2C20 has 18,752 logic elements, 52 M4K RAM blocks (4 Kbit each) and 26 multipliers (18 $\times$ 18). All RAMs in the design are M4K blocks: the two caches, the register file, the boot ROM, the video line buffer and the palette.
+
+An M4K block has a register on its read address. The data comes out one cycle after the address goes in. This property sets the structure of the pipeline (Section~\ref{sec:pipeline}).
+
+\subsection{Sections}
+
+\begin{itemize}
+  \item Sections~\ref{sec:isa} to~\ref{sec:traps}: the CPU. Instruction set, pipeline, ALU, multiply and divide, traps.
+  \item Section~\ref{sec:memory}: the caches, the bus and the memory controllers.
+  \item Section~\ref{sec:videoio}: video and the I/O devices.
+  \item Section~\ref{sec:boot}: reset, the boot ROM and the software.
+\end{itemize}

@@ -1,0 +1,389 @@
+\section{Memory system}
+\label{sec:memory}
+
+The DE1 has three memory chips (Table~\ref{tab:chips}). Two 8 KB caches are between the CPU and the chips. A cache hit completes in one cycle.
+
+\begin{guidetable}{The memory chips}{chips}{l l l l l}
+chip & part & organization & 32-bit read & used for \\
+\midrule
+SRAM  & IS61LV25616, 10 ns & 256K $\times$ 16, asynchronous & 4 cycles & framebuffers, code \\
+SDRAM & IS42S16400, CL2 & 4 banks $\times$ 4096 $\times$ 256 $\times$ 16 & 6 to 8 cycles & cold code, heap \\
+flash & S29AL032D, 70/90 ns & 4M $\times$ 8, NOR & 29 cycles & firmware image, the WAD \\
+\end{guidetable}
+
+\subsection{Bus}
+
+The two caches are the masters on \texttt{membus} (\src{rtl/membus.vhd}). All slaves use the same protocol:
+
+\begin{itemize}
+  \item The master holds \texttt{req} and the address stable until the transaction completes.
+  \item The slave sets \texttt{ack} for one cycle for each 32-bit word.
+  \item The slave does not set \texttt{ack} in the first cycle of a request.
+  \item A single transaction is one word. A burst is four words (one 16-byte cache line).
+\end{itemize}
+
+The bus does one transaction at a time (Figure~\ref{fig:membus}). If the two masters make a request in the same cycle, the D-cache gets the bus. The owner keeps the bus until the last \texttt{ack}. All I-cache transactions are bursts.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\scriptsize]
+    \node[st] (free) at (0,0) {free};
+    \node[st] (own) at (6,0) {busy};
+    \draw[tr] (free) to[bend left=25] node[cond, above, align=center] {any \texttt{req}: the owner is D if D asks, else I} (own);
+    \draw[tr] (own) to[bend left=25] node[cond, below, align=center] {\texttt{ack} on the last word\\(1st of a single, 4th of a burst)} (free);
+    \draw[tr] (own) to[out=30, in=-30, looseness=6] node[cond, right, align=left] {\texttt{ack}, more\\words to go} (own);
+  \end{tikzpicture}
+  \caption{The bus arbiter}
+  \label{fig:membus}
+\end{figure}
+
+Address bits 31:28 select the slave (Figure~\ref{fig:soc}). If no slave has the address, the bus acknowledges the request and returns 0.
+
+\subsection{Cache structure}
+
+Each cache is direct-mapped and has 512 lines of 16 bytes (four words). Figure~\ref{fig:cachesplit} shows the fields of an address.
+
+\begin{figure}[H]
+  \centering
+  \begin{bitfield}{32}
+    \bits{31}{13}{tag (19 bits)}\bits{12}{4}{index (512 lines)}\bits{3}{2}{word}\bits*{1}{0}{byte}
+  \end{bitfield}
+  \caption{The fields of an address in the caches}
+  \label{fig:cachesplit}
+\end{figure}
+
+Each cache has two RAMs (Figure~\ref{fig:cacheorg}):
+
+\begin{itemize}
+  \item The tag RAM has 512 entries. Each entry is a valid bit and a 19-bit tag.
+  \item The data RAM has 2048 words. Address bits 12:2 select one word.
+\end{itemize}
+
+The D-cache data RAM is four RAMs of 8 bits, one for each byte lane. Each lane has its own write enable, so a byte store writes one lane.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\scriptsize, dot/.style={circle, fill, inner sep=1.1pt}]
+    % the address word
+    \draw[thick] (0,0) rectangle (3.8,0.6); \node at (1.9,0.3) {tag};
+    \draw[thick] (3.8,0) rectangle (6.0,0.6); \node at (4.9,0.3) {index};
+    \draw[thick] (6.0,0) rectangle (7.0,0.6); \node at (6.5,0.3) {word};
+    \node[above] at (3.5,0.6) {address};
+    % RAMs
+    \node[ram, minimum width=2.6cm, minimum height=1.6cm] (tr) at (4.0,-2.6) {tag RAM\\512 $\times$ (valid + 19)};
+    \node[ram, minimum width=2.6cm, minimum height=1.6cm] (dr) at (8.6,-2.6) {data RAM\\2048 $\times$ 32};
+    \draw[sig] (4.9,0) -- (4.9,-1.8);
+    \draw[thick] (4.9,-0.9) -- (8.2,-0.9);
+    \node[dot] at (4.9,-0.9) {};
+    \draw[sig] (8.2,-0.9) -- (8.2,-1.8);
+    \draw[sig] (6.5,0) -- (6.5,-0.5) -- (9.0,-0.5) -- (9.0,-1.8);
+    \node[above] at (6.6,-0.9) {index};
+    \node[above] at (7.75,-0.5) {word};
+    \draw[sig] (dr.south) -- ++(0,-0.7) node[below] {the word};
+    % compare and hit
+    \node[and port, number inputs=2] (and) at (7.0,-5.2) {};
+    \node[draw, thick, circle, minimum size=0.8cm] (eq) at (3.3,-5.2 |- and.in 2) {$=$};
+    \draw[sig] (3.3,-3.4) -- (eq.north);
+    \node[right] at (3.3,-3.9) {stored tag};
+    \draw[sig] (1.9,0) |- (eq.west);
+    \draw[thick] (eq.east) -- (and.in 2);
+    \draw[thick] (5.2,-3.4) |- (and.in 1);
+    \node[right] at (5.2,-3.9) {valid};
+    \draw[sig] (and.out) -- ++(0.7,0) node[right] {hit};
+  \end{tikzpicture}
+  \caption{A direct-mapped cache}
+  \label{fig:cacheorg}
+\end{figure}
+
+\subsubsection{Read address and request address}
+The RAMs have a register on the read address. The data for an address comes out in the next cycle. Thus each cache port has two addresses:
+
+\begin{itemize}
+  \item \texttt{raddr}: the address that the RAMs read in this cycle. The CPU supplies the address that it will probably request next.
+  \item \texttt{addr}: the address of the request in this cycle.
+\end{itemize}
+
+If \texttt{raddr} in the previous cycle selected the same word as \texttt{addr} in this cycle, the cache is \emph{primed}. A primed cache answers a hit in the same cycle as the request. If the cache is not primed, it reads the RAMs again and the hit comes one cycle later.
+
+The pipeline keeps the caches primed. Fetch always reads \texttt{fa}, its next address. The D-cache reads \texttt{ea} from EX, one cycle before the access is in MEM.
+
+\subsection{I-cache}
+
+The I-cache is in \src{rtl/icache.vhd}. Figure~\ref{fig:icfsm} shows its state machine.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\scriptsize]
+    \node[st] (init) at (0,0) {INIT};
+    \node[st] (idle) at (5,0) {IDLE};
+    \node[st] (fill) at (10,0) {FILL};
+    \node[st] (pf)   at (10,-3.6) {PF};
+    \draw[tr] (init) to[bend left=22] node[cond, above] {all 512 tags cleared} (idle);
+    \draw[tr] (idle) to[bend left=22] node[cond, below] {FENCE.I} (init);
+    \draw[tr] (init) to[out=200, in=160, looseness=6] node[cond, left] {clear a tag} (init);
+    \draw[tr] (idle) to[bend left=22] node[cond, above] {miss: latch the line} (fill);
+    \draw[tr] (fill) to[bend left=22] node[cond, below, align=center] {4th word; next\\line present} (idle);
+    \draw[tr] (fill) to[out=20, in=-20, looseness=6] node[cond, right] {word} (fill);
+    \draw[tr] (fill) -- (pf) node[cond, midway, right, align=left] {4th word; next\\line missing}; 
+    \draw[tr] (pf) -| node[cond, pos=0.3, below] {4th word} (idle);
+    \draw[tr] (pf) to[out=20, in=-20, looseness=6] node[cond, right] {word} (pf);
+  \end{tikzpicture}
+  \caption{The I-cache state machine}
+  \label{fig:icfsm}
+\end{figure}
+
+\begin{itemize}
+  \item \texttt{INIT}: clear one tag in each cycle, for 512 cycles. The cache enters this state after reset and after FENCE.I.
+  \item \texttt{IDLE}: answer hits. On a miss, save the line address and start a burst.
+  \item \texttt{FILL}: write each word to the data RAM. Write the tag with the fourth word. The line address is in a register, so the fetch address can change (a redirect) before the fill completes.
+  \item \texttt{PF}: fill the next line (prefetch). The cache enters this state only if the next line is not in the cache. During \texttt{FILL}, the tag RAM reads the tag of the next line for this check. During \texttt{PF}, the cache answers hits on all other lines.
+\end{itemize}
+
+When the CPU executes sequential code, the prefetch usually completes before fetch gets to the next line.
+
+\subsection{D-cache}
+
+The D-cache is in \src{rtl/dcache.vhd}. It has these properties:
+
+\begin{itemize}
+  \item Write-through: each store goes to memory.
+  \item No write allocate: a store that misses does not fill a line.
+  \item A write buffer of four entries holds stores until the bus accepts them.
+\end{itemize}
+
+Figure~\ref{fig:dcfsm} shows the state machine. Load hits, stores and write buffer transactions occur in \texttt{IDLE}.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\scriptsize]
+    \node[st] (init) at (0,0) {INIT};
+    \node[st] (idle) at (4.5,0) {IDLE};
+    \node[st] (fill) at (10.5,2.2) {FILL};
+    \node[st] (unc)  at (10.5,-2.2) {UNC};
+    \draw[tr] (init) -- (idle) node[cond, midway, above, align=center] {512 tags\\cleared};
+    \draw[tr] (idle) to[bend left=15] node[cond, above, align=center, pos=0.5] {cacheable load miss,\\buffer empty} (fill);
+    \draw[tr] (fill) to[bend left=15] node[cond, below right, pos=0.35] {4th word} (idle);
+    \draw[tr] (idle) to[bend right=15] node[cond, below, align=center, pos=0.6] {uncached access,\\buffer empty} (unc);
+    \draw[tr] (unc) to[bend right=15] node[cond, above, pos=0.45] {ack} (idle);
+    \draw[tr] (fill) to[out=20, in=-20, looseness=6] node[cond, right] {word} (fill);
+    \draw[tr] (idle) to[out=-115, in=-65, looseness=6] (idle);
+    \node[below, align=center] at (3.2,-1.75) {load hit: ack at once\\store: into the buffer, ack at once\\buffer not empty: write out the oldest};
+  \end{tikzpicture}
+  \caption{The D-cache state machine}
+  \label{fig:dcfsm}
+\end{figure}
+
+Each write buffer entry holds an address, a data word and four byte strobes (Figure~\ref{fig:wbuf}). The cache puts a store in the buffer and acknowledges it in the same cycle. If the store hits, the cache also writes the data RAM. When the buffer is not empty and the cache is in \texttt{IDLE}, the cache writes the oldest entry to the bus as a single transaction.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\scriptsize]
+    \foreach \i in {0,...,3}
+      \node[draw, thick, minimum width=3.2cm, minimum height=0.6cm, fill=black!7] (e\i) at (0,-0.6*\i) {address, data, strobes};
+    \draw[sig] (-3.2,0) node[left] {store from MEM} -- (e0.west);
+    \node[above] at (-2.3,0) {tail};
+    \draw[sig] (e3.east) -- (3.4,-1.8) node[right] {one-word bus write};
+    \node[above] at (2.4,-1.8) {head};
+  \end{tikzpicture}
+  \caption{The write buffer. The oldest entry is at the bottom.}
+  \label{fig:wbuf}
+\end{figure}
+
+Three rules keep loads and stores in the correct order. The cache does not compare addresses.
+
+\begin{itemize}
+  \item A load hit does not wait for the write buffer. This is safe, because a store that hits has written the cache.
+  \item A line fill and an uncached access wait until the write buffer is empty.
+  \item FENCE.I waits until the write buffer is empty. New code is in memory before the I-cache reads it.
+\end{itemize}
+
+Regions \texttt{0x1}, \texttt{0x2} and \texttt{0x8} are cacheable. All other regions (boot ROM, flash, I/O) use the uncached path in state \texttt{UNC}. For the tag, the cache changes region \texttt{0x8} to \texttt{0x2}. Thus the two SDRAM addresses of a word use the same cache line.
+
+\subsection{SRAM controller}
+
+The SRAM is asynchronous and 16 bits wide. A 32-bit word is two halfword accesses. The controller (\src{rtl/sram_ctrl.vhd}) drives all SRAM pins from registers. Figure~\ref{fig:sramrd} shows a single read. $A$ is the halfword address (address bits 18:1).
+
+\begin{figure}[H]
+  \centering
+  \begin{waveform}[1.0cm]{6}
+    \wave{\texttt{req}}{111110}
+    \wavebus{\texttt{SRAM\_ADDR}}{0/2/x, 2/3/A, 3/4/A+1, 4/6/x}
+    \wave{\texttt{OE\_N}}{110011}
+    \wavebus{\texttt{SRAM\_DQ}}{0/2/x, 2/3/lo, 3/4/hi, 4/6/x}
+    \wave{\texttt{ack}}{000010}
+    \wavebus{\texttt{rdata}}{0/4/x, 4/5/word, 5/6/x}
+    \wavesteps[cycle]
+  \end{waveform}
+  \caption{A single 32-bit read from SRAM. $A$ is the halfword address, byte address bits 18:1.}
+  \label{fig:sramrd}
+\end{figure}
+
+A burst reads eight halfwords in sequence. The controller acknowledges one word in each second cycle, and the first \texttt{ack} is in cycle 4.
+
+A halfword write uses three cycles: setup, WE low, WE high (Figure~\ref{fig:sramwr}). A word store writes two halfwords. A byte store or a halfword store writes one halfword. The UB and LB pins select the bytes.
+
+\begin{figure}[H]
+  \centering
+  \begin{waveform}[1.0cm]{9}
+    \wave{\texttt{req}}{111111110}
+    \wavebus{\texttt{SRAM\_ADDR}}{0/2/x, 2/5/A, 5/8/A+1, 8/9/x}
+    \wavebus{\texttt{SRAM\_DQ}}{0/2/x, 2/5/low half, 5/8/high half, 8/9/x}
+    \wave{\texttt{WE\_N}}{111011011}
+    \wave{\texttt{ack}}{000000010}
+    \wavesteps[cycle]
+  \end{waveform}
+  \caption{A full-word write to SRAM}
+  \label{fig:sramwr}
+\end{figure}
+
+\subsubsection{Video port}
+The video block has a separate port on the controller. In each cycle, the controller selects one operation in this order of priority:
+
+\begin{enumerate}
+  \item Complete a write pulse that is in progress.
+  \item Start a video read.
+  \item Start a CPU read.
+  \item Start a CPU write.
+\end{enumerate}
+
+A video read uses three cycles (start, capture, acknowledge). The video block does not make a new request before the acknowledge. Thus video uses a maximum of one cycle in three, and the CPU can use the other two. A line of the 8-bit framebuffer is 160 halfwords. The video block reads the line in approximately 480 cycles.
+
+\subsection{SDRAM controller}
+
+The controller is in \src{rtl/sdram_ctrl.vhd}. An SDRAM has rows and columns in each bank:
+
+\begin{itemize}
+  \item ACTIVATE opens one row of a bank. READ and WRITE then access columns of the open row.
+  \item PRECHARGE closes the row. A bank must be closed before it can open a different row.
+\end{itemize}
+
+The controller keeps one row open in each of the four banks. It closes a row only for an access to a different row in the same bank, or for a refresh. Figure~\ref{fig:sdaddr} shows the address fields.
+
+\begin{figure}[H]
+  \centering
+  \begin{bitfield}{32}
+    \bits*{31}{23}{ignored}\bits{22}{11}{row (4096)}\bits{10}{9}{bank}\bits{8}{1}{column (256)}\bits*{0}{0}{}
+  \end{bitfield}
+  \caption{SDRAM address mapping. Bit 0 picks the byte within a halfword, through the DQM pins.}
+  \label{fig:sdaddr}
+\end{figure}
+
+The bank bits are immediately above the column bits. Thus four consecutive 512-byte blocks are in four different banks, and each block can have its row open.
+
+The SDRAM operates with CAS latency 2 and burst length 1. Each halfword needs one READ or WRITE command. The SDRAM clock is the inverted system clock, so the SDRAM samples each command half a cycle after the FPGA drives it. Table~\ref{tab:sdcmd} lists the commands.
+
+\begin{guidetable}{SDRAM commands (CS low)}{sdcmd}{l c c c l}
+command & RAS & CAS & WE & address \\
+\midrule
+NOP        & 1 & 1 & 1 & -- \\
+ACTIVATE   & 0 & 1 & 1 & bank, row \\
+READ       & 1 & 0 & 1 & bank, column \\
+WRITE      & 1 & 0 & 0 & bank, column. DQM masks bytes \\
+PRECHARGE  & 0 & 1 & 0 & bank, or all banks when A10 = 1 \\
+REFRESH    & 0 & 0 & 1 & -- \\
+MODE SET   & 0 & 0 & 0 & \texttt{0x220}: CL2, burst 1, single writes \\
+\end{guidetable}
+
+Figure~\ref{fig:sdfsm} shows the state machine. The states in the top row do the initialization sequence after power-up. \texttt{RESET} closes all rows after a KEY0 reset.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\scriptsize, x=1cm, y=1cm]
+    \node[st] (pu)   at (0,4.8)    {POWER\\UP};
+    \node[st] (ipre) at (2.6,4.8)  {INIT\\PRE};
+    \node[st] (iref) at (5.2,4.8)  {INIT\\REF};
+    \node[st] (imrs) at (7.8,4.8)  {INIT\\MRS};
+    \node[st] (done) at (5.0,2.3)  {DONE};
+    \node[st] (rst)  at (10.6,4.8) {RESET};
+
+    \node[st] (idle) at (5.0,0)     {IDLE};
+    \node[st] (pre1) at (0,0)       {PRE\\ONE};
+    \node[st] (act)  at (1.8,-3.2)  {ACTI-\\VATE};
+    \node[st] (cols) at (5.0,-5.6)  {COLS};
+    \node[st] (drn)  at (8.4,-4.0)  {DRAIN};
+    \node[st] (prea) at (10.6,1.8)  {PRE\\ALL};
+    \node[st] (ref)  at (10.6,-1.8) {RE-\\FRESH};
+
+    % init
+    \draw[tr] (pu) -- (ipre) node[cond, midway, above] {200 µs};
+    \draw[tr] (ipre) -- (iref) node[cond, midway, above] {PRE all};
+    \draw[tr] (iref) to[out=120, in=60, looseness=6] node[cond, above] {REF, 8 times} (iref);
+    \draw[tr] (iref) -- (imrs);
+    \draw[tr] (imrs) -- (done) node[cond, midway, below right] {MODE SET};
+    \draw[tr] (done) -- (idle) node[cond, midway, right] {wait};
+    \draw[tr] (10.6,6.2) node[above] {KEY0 reset} -- (rst);
+    \draw[tr] (rst) -- (prea) node[cond, midway, right] {wait, then PRE all};
+
+    % requests
+    \draw[tr] (idle) -- (pre1) node[cond, midway, above, align=center] {row conflict:\\PRE the bank};
+    \draw[tr] (pre1) -- (act) node[cond, midway, left] {ACT};
+    \draw[tr] (idle) -- (act) node[cond, pos=0.3, above left] {bank closed: ACT};
+    \draw[tr] (act) -- (cols) node[cond, midway, below left] {NOP (tRCD)};
+    \draw[tr] (idle) to[bend left=16] node[cond, right, pos=0.4] {row hit} (cols);
+    \draw[tr] (cols) to[bend left=16] node[cond, left, pos=0.6, align=right] {last WRITE:\\ack} (idle);
+    \draw[tr] (cols) to[out=-120, in=-60, looseness=6] (cols);
+    \node[below] at (5.0,-7.2) {READ or WRITE, one per cycle};
+    \draw[tr] (cols) -- (drn) node[cond, midway, below right] {last READ};
+    \draw[tr] (drn) -- (idle) node[cond, pos=0.3, right] {data in};
+
+    % refresh
+    \draw[tr] (idle) to[bend left=18] node[cond, above, align=center, pos=0.45] {refresh due,\\rows open: PRE all} (prea);
+    \draw[tr] (prea) to[bend left=18] node[cond, below, pos=0.25] {wait} (idle);
+    \draw[tr] (idle) to[bend right=18] node[cond, below, align=center, pos=0.45] {refresh due,\\all closed: REF} (ref);
+    \draw[tr] (ref) to[bend right=18] node[cond, above, pos=0.25] {wait} (idle);
+  \end{tikzpicture}
+  \caption{The SDRAM controller state machine. Capital letters show the command that each transition issues.}
+  \label{fig:sdfsm}
+\end{figure}
+
+The controller does a refresh every 700 cycles (14~µs). The SDRAM needs one refresh every 15.6~µs. When a refresh is due, the controller does not accept a new request. It closes all rows and then issues REFRESH. The next access to each bank must open its row again.
+
+\subsubsection{Access time}
+Figure~\ref{fig:sdrd} shows a single read from a bank that has no open row. The data for a READ is on DQ two SDRAM clocks later. The controller has an input register on DQ, so it uses each halfword three clock edges after the READ.
+
+\begin{figure}[H]
+  \centering
+  \begin{waveform}[1.0cm]{8}
+    \wave{\texttt{req}}{11111110}
+    \wavebus{command}{0/1/NOP, 1/2/ACT, 2/3/NOP, 3/4/RD, 4/5/RD, 5/8/NOP}
+    \wavebus{address}{0/1/x, 1/2/row, 2/3/x, 3/4/col, 4/5/col+1, 5/8/x}
+    \wavebus{\texttt{DRAM\_DQ}}{0/4.5/x, 4.5/5.5/lo, 5.5/6.5/hi, 6.5/8/x}
+    \wave{\texttt{ack}}{00000001}
+    \wavesteps[cycle]
+  \end{waveform}
+  \caption{A single 32-bit read from a closed bank. The controller samples DQ on the edges that end cycles 4 and 5.}
+  \label{fig:sdrd}
+\end{figure}
+
+Table~\ref{tab:sdcost} gives the cycle number of each \texttt{ack}. Cycle 0 is the first cycle of the request.
+
+\begin{guidetable}{SDRAM access costs}{sdcost}{l l c c}
+case & commands before the columns & single read & line fill \\
+\midrule
+row already open (hit) & none & 6 & 6, 8, 10, 12 \\
+bank closed & ACT, NOP & 7 & 7, 9, 11, 13 \\
+another row open (conflict) & PRE, ACT, NOP & 8 & 8, 10, 12, 14 \\
+\midrule
+write & as above & \multicolumn{2}{c}{3, 4 or 5. The row stays open} \\
+\end{guidetable}
+
+\subsection{Flash controller}
+
+The flash is 8 bits wide and has an access time of 70 ns or 90 ns (the part has two speed grades). The controller (\src{rtl/flash_ctrl.vhd}) reads one byte in 7 cycles. It sets OE high between bytes, so each byte is a separate read cycle. Four bytes make a word (Figure~\ref{fig:flrd}).
+
+\begin{figure}[H]
+  \centering
+  \begin{waveform}[0.44cm]{30}
+    \wave{\texttt{req}}{111111111111111111111111111111}
+    \wavebus{\texttt{FL\_ADDR}}{1/8/A, 8/15/A+1, 15/22/A+2, 22/29/A+3}
+    \wave{\texttt{OE\_N}}{100000001000000100000010000001}
+    \wavebus{byte}{6/8/B0, 13/15/B1, 20/22/B2, 27/29/B3}
+    \wave{\texttt{ack}}{000000000000000000000000000001}
+  \end{waveform}
+  \caption{A 32-bit flash read. The controller captures each byte on the last edge of its address window.}
+  \label{fig:flrd}
+\end{figure}
+
+A word read takes 28 cycles. The CPU does not execute code from flash. The boot ROM copies the firmware from flash to SRAM, and Doom copies WAD data from flash to SDRAM.
+
+The controller can also write. Each store from the bus becomes one byte write cycle on the chip, with a WE pulse of 140 ns. The controller does not generate the flash command sequences. The boot ROM software sends the unlock, erase and program commands and reads the status bit (Section~\ref{sec:boot}).

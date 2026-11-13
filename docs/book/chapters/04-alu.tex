@@ -1,0 +1,246 @@
+\section{ALU}
+\label{sec:alu}
+
+The ALU is a combinational process in EX (\src{rtl/cpu.vhd}). Figure~\ref{fig:alu} shows its structure.
+
+\begin{itemize}
+  \item Operand $a$ is rs1. Operand $b$ is rs2 for opcode OP, and the immediate for all other opcodes.
+  \item funct3 selects one of eight functions.
+  \item Instruction bit 30 changes ADD to SUB (opcode OP only) and a logical right shift to an arithmetic right shift.
+  \item For LUI, AUIPC, JAL, JALR and SYSTEM, the opcode replaces the result.
+\end{itemize}
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\scriptsize]
+    % b operand mux
+    \node[mux, minimum height=1.3cm, minimum width=0.5cm] (bm) at (0,-0.6) {};
+    \draw[sig] (-1.0,-0.3) node[left] {\texttt{rs2v}} -- (-0.25,-0.3);
+    \draw[sig] (-1.0,-0.9) node[left] {\texttt{ex\_imm}} -- (-0.25,-0.9);
+    \draw[thick] (0,-1.25) -- (0,-1.6) node[below] {opcode is OP};
+    \node[right] at (0.3,-0.35) {$b$};
+    \draw[thick] (-1.0,0.6) node[left] {\texttt{rs1v}} -- (0.9,0.6);
+    \node[above] at (0.4,0.6) {$a$};
+    \draw[thick] (bm.east) -- (0.9,-0.6);
+    % the operand bus, one tap per function unit
+    \draw[line width=1.8pt] (0.9,2.8) -- (0.9,-2.8);
+    \foreach \n/\y [count=\k from 0] in {{$a \pm b$}/2.8, {$a \ll b[4{:}0]$}/2.0, {$a <_s b$}/1.2, {$a <_u b$}/0.4,
+                                        {$a \oplus b$}/-0.4, {$a \gg b[4{:}0]$}/-1.2, {$a \lor b$}/-2.0, {$a \land b$}/-2.8} {
+      \node[blk, minimum width=1.7cm, minimum height=0.55cm] (u\k) at (2.3,\y) {\n};
+      \draw[bus] (0.9,\y) -- (u\k.west);
+      \draw[sig] (u\k.east) -- (4.15,\y);
+    }
+    \node[above, align=center] at (2.3,3.1) {subtract when OP\\and bit 30 is set};
+    \node[below, align=center] at (2.3,-3.1) {right shifts are arithmetic\\(SRA) when bit 30 is set};
+    % funct3 mux, numbered inputs drawn after it so they sit on top
+    \node[mux, minimum height=7.2cm, minimum width=0.8cm] (fm) at (4.55,0.0) {};
+    \foreach \y [count=\k from 0] in {2.8,2.0,1.2,0.4,-0.4,-1.2,-2.0,-2.8}
+      \node at (4.33,\y) {\k};
+    \draw[thick] (4.55,-2.9) -- (4.55,-3.9) node[below] {funct3};
+    % opcode override mux
+    \node[mux, minimum height=4.0cm, minimum width=0.6cm] (om) at (10.0,0.1) {};
+    \draw[sig] (fm.east) -- (5.6,0.0) |- (9.7,1.5);
+    \node[above] at (7.6,1.5) {OP, OP-IMM result};
+    \foreach \t/\y in {{$imm_U$ (LUI)}/0.8, {$pc + imm_U$ (AUIPC)}/0.1, {$pc+4$ (JAL, JALR)}/-0.6, {CSR value (SYSTEM)}/-1.3} {
+      \draw[sig] (6.2,\y) -- (9.7,\y);
+      \node[above] at (7.6,\y) {\t};
+    }
+    \draw[thick] (10.0,-1.7) -- (10.0,-2.2) node[below] {opcode};
+    \draw[sig] (om.east) -- (11.0,0.1) node[right] {\texttt{alu\_out}};
+  \end{tikzpicture}
+  \caption{The ALU}
+  \label{fig:alu}
+\end{figure}
+
+\subsection{ALU map}
+
+Table~\ref{tab:alumap} gives the operation for each value of funct3 and instruction bit 30.
+
+\begin{guidetable}{The ALU map: funct3 against instruction bit 30 and opcode}{alumap}{c l l l l}
+\multirow{2}{*}{funct3} & \multicolumn{2}{c}{OP ($b = rs2$)} & \multicolumn{2}{c}{OP-IMM ($b = imm$)} \\
+\cmidrule(lr){2-3}\cmidrule(lr){4-5}
+ & bit 30 = 0 & bit 30 = 1 & bit 30 = 0 & bit 30 = 1 \\
+\midrule
+\texttt{000} & ADD  & SUB  & ADDI & ADDI \\
+\texttt{001} & SLL  & --   & SLLI & -- \\
+\texttt{010} & SLT  & --   & SLTI & SLTI \\
+\texttt{011} & SLTU & --   & SLTIU & SLTIU \\
+\texttt{100} & XOR  & --   & XORI & XORI \\
+\texttt{101} & SRL  & SRA  & SRLI & SRAI \\
+\texttt{110} & OR   & --   & ORI  & ORI \\
+\texttt{111} & AND  & --   & ANDI & ANDI \\
+\end{guidetable}
+
+A dash is an illegal instruction. OP-IMM has no SUBI, because ADDI with a negative immediate does the same operation. In OP-IMM, bit 30 is part of the immediate, except for the shifts. For the shifts, instruction bits 31:25 must be \texttt{0000000}, or \texttt{0100000} for SRAI.
+
+Table~\ref{tab:aluovr} lists the opcodes that replace or ignore the ALU result.
+
+\begin{guidetable}{Opcode overrides of the ALU result}{aluovr}{l l}
+opcode & \texttt{alu\_out} \\
+\midrule
+LUI & $imm_U$ \\
+AUIPC & $pc + imm_U$ \\
+JAL, JALR & $pc + 4$, the link address \\
+SYSTEM & the old CSR value \\
+OP with funct7 = \texttt{0000001} & not used. See Section~\ref{sec:muldiv} \\
+LOAD, STORE, AMO & not used. The address comes from the adder \texttt{ea} \\
+\end{guidetable}
+
+The load and store address does not come from the ALU. A separate adder calculates $ea = rs1 + imm$. The D-cache needs \texttt{ea} early in the cycle, and the ALU output multiplexers would add delay.
+
+\subsection{SLT and SLTU}
+
+SLT and SLTU give the result 1 or 0. Let $d = a - b$. The subscript 31 means bit 31.
+
+\begin{itemize}
+  \item SLTU: the result is the borrow out of $a - b$.
+  \item SLT: if the signs of $a$ and $b$ are different, the negative operand is smaller. If the signs are equal, the subtraction cannot overflow, and $d_{31}$ is the result.
+\end{itemize}
+
+The RTL uses the VHDL comparison operators, and Quartus builds the logic. Figure~\ref{fig:sltkmap} is the K-map for SLT.
+
+\begin{figure}[H]
+  \centering
+  \begin{kmap}{4}{2}
+    \kmapcells{{0,1,0,0},{1,1,1,0}}
+    \kmaptop{3}{4}{$b_{31}$}
+    \kmapbottom{2}{3}{$d_{31}$}
+    \kmapleft{2}{2}{$a_{31}$}
+    \kmaploop{1}{2}{2}{2}{$a_{31}\,b_{31}'$}
+    \kmaploop[densely dashed]{2}{1}{2}{2}{$b_{31}'\,d_{31}$}
+    \kmaploop[densely dotted]{2}{2}{3}{2}{$a_{31}\,d_{31}$}
+  \end{kmap}
+  \caption{K-map for $a <_s b$ from the two sign bits and the sign of the difference}
+  \label{fig:sltkmap}
+\end{figure}
+
+\noindent The minimum expression is
+\begin{equation*}
+  a <_s b \;=\; a_{31} b_{31}' + a_{31} d_{31} + b_{31}' d_{31} .
+\end{equation*}
+This is the majority function of $a_{31}$, $b_{31}'$ and $d_{31}$.
+
+\subsection{Branch comparisons}
+
+Branches do not use the ALU. EX has a separate comparator for rs1 and rs2. funct3 selects the condition (Table~\ref{tab:branches}). funct3 bit 0 inverts the condition, so three comparisons give the six conditions.
+
+\begin{guidetable}{Branch conditions}{branches}{c l l c}
+funct3 & name & taken when & bit 0 inverts \\
+\midrule
+\texttt{000} & BEQ  & $rs1 = rs2$ & \\
+\texttt{001} & BNE  & $rs1 \ne rs2$ & BEQ \\
+\texttt{100} & BLT  & $rs1 <_s rs2$ & \\
+\texttt{101} & BGE  & $rs1 \ge_s rs2$ & BLT \\
+\texttt{110} & BLTU & $rs1 <_u rs2$ & \\
+\texttt{111} & BGEU & $rs1 \ge_u rs2$ & BLTU \\
+\end{guidetable}
+
+\subsection{JALR target check}
+\label{sec:sumeq}
+
+For a predicted return, EX must check that $rs1 + imm$ is equal to the predicted target. An adder followed by a comparator has a 32-bit carry chain. The function \texttt{sum\_eq} does the check without a carry chain.
+
+\texttt{sum\_eq} tests whether $a + b = c$. Let $k_i$ be the carry into bit $i$. If $a + b = c$, then for each bit:
+\begin{equation*}
+  c_i = a_i \oplus b_i \oplus k_i \quad\Rightarrow\quad k_i = a_i \oplus b_i \oplus c_i .
+\end{equation*}
+The carry out of bit $i$ is $a_i b_i + (a_i + b_i)\,k_i$. Table~\ref{tab:sumeq} gives the carry out for each combination, with $k_i$ from the equation above. Figure~\ref{fig:sumeqkmap} is the K-map.
+
+\begin{guidetable}{The carry out of bit $i$ when $a + b = c$}{sumeq}{c c c c c}
+$a_i$ & $b_i$ & $c_i$ & carry in it needs, $a_i \oplus b_i \oplus c_i$ & carry out it makes \\
+\midrule
+0 & 0 & 0 & 0 & 0 \\
+0 & 0 & 1 & 1 & 0 \\
+0 & 1 & 0 & 1 & 1 \\
+0 & 1 & 1 & 0 & 0 \\
+1 & 0 & 0 & 1 & 1 \\
+1 & 0 & 1 & 0 & 0 \\
+1 & 1 & 0 & 0 & 1 \\
+1 & 1 & 1 & 1 & 1 \\
+\end{guidetable}
+
+\begin{figure}[H]
+  \centering
+  \begin{kmap}{4}{2}
+    \kmapcells{{0,0,0,1},{1,0,1,1}}
+    \kmaptop{3}{4}{$b_i$}
+    \kmapbottom{2}{3}{$c_i$}
+    \kmapleft{2}{2}{$a_i$}
+    \kmaploop{3}{2}{4}{2}{$a_i b_i$}
+    \kmaploop[densely dashed]{4}{1}{4}{2}{$b_i c_i'$}
+    \kmaploop[densely dotted]{1}{2}{1}{2}{}
+    \kmaploop[densely dotted]{4}{2}{4}{2}{$a_i c_i'$ (the two end cells of the row are adjacent)}
+  \end{kmap}
+  \caption{K-map of the carry out of bit $i$. The columns are $b_i c_i$ in Gray code order.}
+  \label{fig:sumeqkmap}
+\end{figure}
+
+\noindent The minimum expression for the carry out is $a_i b_i + a_i c_i' + b_i c_i' = a_i b_i + (a_i + b_i)\,c_i'$. The sum is correct if the carry out of each bit is equal to the carry in that the next bit needs. The carry into bit 0 must be 0. The RTL is:
+\begin{center}
+\texttt{k := shift\_left((a and b) or ((a or b) and not c), 1);}\\
+\texttt{return (a xor b xor c) = k;}
+\end{center}
+The 32 bit checks are independent. The logic depth is one gate level for each bit, and then a 32-input AND.
+
+JALR clears bit 0 of the target. Thus EX replaces bit 0 of the predicted target with bit 0 of the sum before the check, and only bits 31:1 have an effect.
+
+\subsection{Store data and load alignment}
+
+The data bus is 32 bits. A byte store or a halfword store is a word write with byte strobes. EX copies the store data to all byte lanes, and the strobes select the lanes to write (Table~\ref{tab:lanes}).
+
+\begin{guidetable}{Store data and byte strobes for each size and address}{lanes}{l c c l}
+size & \texttt{ea[1:0]} & \texttt{wstrb} & \texttt{wdata} \\
+\midrule
+byte & 00 & \texttt{0001} & \multirow{4}{*}{$b\,b\,b\,b$ (rs2[7:0] four times)} \\
+byte & 01 & \texttt{0010} & \\
+byte & 10 & \texttt{0100} & \\
+byte & 11 & \texttt{1000} & \\
+\midrule
+half & 0x & \texttt{0011} & \multirow{2}{*}{$h\,h$ (rs2[15:0] twice)} \\
+half & 1x & \texttt{1100} & \\
+\midrule
+word & xx & \texttt{1111} & rs2 \\
+\end{guidetable}
+
+A load reads the full word. MEM shifts the word right by 0, 8, 16 or 24 bits, as address bits 1:0 select. Then MEM extends the result from bit 7 or bit 15, with the sign or with zeros, as funct3 selects (Figure~\ref{fig:loadalign}).
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[font=\scriptsize]
+    \node[left] at (0,0) {\texttt{d\_rdata} = B3 B2 B1 B0};
+    \draw[thick] (0,0) -- (0.6,0) -- (0.6,0.9);
+    \draw[thick] (0.6,0) -- (0.6,-0.9);
+    \foreach \t/\y in {{B3 B2 B1 B0}/0.9, {0 B3 B2 B1}/0.3, {0 0 B3 B2}/-0.3, {0 0 0 B3}/-0.9} {
+      \draw[sig] (0.6,\y) -- (3.65,\y);
+      \node[above] at (2.3,\y-0.03) {\t};
+    }
+    \node[mux, minimum height=2.6cm, minimum width=0.6cm] (sh) at (3.95,0) {};
+    \draw[thick] (3.95,-1.3) -- (3.95,-1.7) node[below] {\texttt{m\_addr[1:0]}};
+    \node[blk, minimum width=1.9cm] (ext) at (6.2,0) {extend from\\bit 7 or 15};
+    \draw[sig] (sh.east) -- (ext.west);
+    \draw[thick] (6.2,-0.45) -- (6.2,-0.9) node[below] {funct3};
+    \draw[sig] (ext.east) -- (8.0,0) node[right] {\texttt{load\_val}};
+  \end{tikzpicture}
+  \caption{Load alignment in MEM}
+  \label{fig:loadalign}
+\end{figure}
+
+\subsection{AMO unit}
+
+MEM has a second, small ALU for the AMO instructions (\texttt{amo\_new}). Operand $a$ is the old memory word. Operand $b$ is rs2. Instruction bits 31:27 select the operation (Table~\ref{tab:amo}).
+
+\begin{guidetable}{AMO operations}{amo}{c l l}
+bits 31:27 & instruction & new memory value \\
+\midrule
+\texttt{00001} & AMOSWAP.W & $b$ \\
+\texttt{00000} & AMOADD.W  & $a + b$ \\
+\texttt{00100} & AMOXOR.W  & $a \oplus b$ \\
+\texttt{01100} & AMOAND.W  & $a \land b$ \\
+\texttt{01000} & AMOOR.W   & $a \lor b$ \\
+\texttt{10000} & AMOMIN.W  & $\min_s(a, b)$ \\
+\texttt{10100} & AMOMAX.W  & $\max_s(a, b)$ \\
+\texttt{11000} & AMOMINU.W & $\min_u(a, b)$ \\
+\texttt{11100} & AMOMAXU.W & $\max_u(a, b)$ \\
+\texttt{00010} & LR.W      & no write. Sets the reservation \\
+\texttt{00011} & SC.W      & $b$ and $rd \leftarrow 0$ if the reservation is valid. If not, $rd \leftarrow 1$ \\
+\end{guidetable}

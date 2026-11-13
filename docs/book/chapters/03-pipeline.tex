@@ -1,0 +1,322 @@
+\section{Pipeline}
+\label{sec:pipeline}
+
+The CPU is in \src{rtl/cpu.vhd}. It is an in-order pipeline. The source file names five stages: IF, ID, EX, MEM and WB. An instruction fetch takes two cycles, because the I-cache RAMs have a register on the read address. This guide names the two fetch cycles IF and IF2. Table~\ref{tab:stages} lists the stages and Figure~\ref{fig:datapath} shows the datapath.
+
+\begin{guidetable}{The pipeline stages}{stages}{l p{0.74\linewidth}}
+stage & function \\
+\midrule
+IF  & Select the next fetch address \texttt{fa}. The I-cache RAMs latch \texttt{fa} on the clock edge. \\
+IF2 & The I-cache supplies the instruction and the hit signal \texttt{i\_ack}. Predecode finds the predicted target. \\
+ID  & Decode the instruction and build the immediate. The register file latches the two source register numbers. A predicted-taken instruction redirects fetch. \\
+EX  & Forward the operands. Operate the ALU, the branch comparator and the address adder. Read CSRs. Detect traps. Multiply and divide. \\
+MEM & Access the D-cache. Align and extend load data. Do the AMO read and write. \\
+WB  & Write the register file. Retire the instruction. \\
+\end{guidetable}
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[x=1cm, y=1cm, font=\scriptsize, dot/.style={circle, fill, inner sep=1.1pt}]
+    % stage names and the pipeline registers between them
+    \foreach \n/\x in {IF/0.65, IF2/3.0, ID/6.0, EX/9.6, MEM/12.4, WB/14.4}
+      \node[font=\small\bfseries] at (\x,5.35) {\n};
+    \foreach \x in {1.6, 4.6, 7.7, 11.3, 13.8}
+      \draw[thick, fill=black!12] (\x-0.1,-2.0) rectangle (\x+0.1,4.9);
+
+    % ---- IF: the next-fetch-address mux
+    \node[mux, minimum height=2.6cm, minimum width=0.5cm] (pcmux) at (0.65,2.0) {};
+    \draw[sig] (-0.2,6.0) -- (-0.2,2.9) -- (0.4,2.9);
+    \draw[sig] (-0.6,6.6) -- (-0.6,2.3) -- (0.4,2.3);
+    \draw[sig] (-0.3,1.7) node[left] {\texttt{f\_pc}+4} -- (0.4,1.7);
+    \draw[sig] (-0.3,1.1) node[left] {\texttt{f\_pc}} -- (0.4,1.1);
+    \draw[sig] (0.9,2.0) -- (1.48,2.0);
+    \node[above] at (1.2,2.0) {\texttt{fa}};
+
+    % ---- IF2: I-cache and predecode
+    \node[ram, minimum width=1.8cm, minimum height=1.2cm] (ic) at (3.0,3.0) {I-cache\\RAMs};
+    \node[blk, minimum width=1.8cm, minimum height=1.3cm] (pd) at (3.0,0.6) {predecode:\\guess the\\next pc};
+    \draw[sig] (1.72,2.0) -- (1.9,2.0) |- (ic.west);
+    \draw[sig] (ic.south) -- (pd.north) node[midway, right] {instr};
+    \draw[sig] (ic.east) -- (4.48,3.0);
+    \draw[sig] (pd.east) -- (4.48,0.6);
+
+    % ---- ID: decode queue, decode, register file
+    \node[blk, minimum width=1.8cm, minimum height=0.55cm] (q1)  at (6.0,4.25) {q1 (spare)};
+    \node[blk, minimum width=1.8cm, minimum height=0.55cm] (idq) at (6.0,3.3)  {ID slot};
+    \node[blk, minimum width=1.8cm, minimum height=0.55cm] (dec) at (6.0,2.3)  {decode, imm};
+    \node[ram, minimum width=1.8cm, minimum height=1.1cm]  (rf)  at (6.0,0.6)  {register file\\(two copies)};
+    \draw[thick] (4.72,0.6) -- (4.85,0.6) -- (4.85,3.0);
+    \draw[thick] (4.72,3.0) -- (4.85,3.0);
+    \draw[sig] (4.85,3.0) |- (q1.west);
+    \draw[sig] (4.85,3.0) |- (idq.west);
+    \node[dot] at (4.85,3.0) {};
+    \draw[sig] (q1) -- (idq);
+    \draw[sig] (idq) -- (dec);
+    \draw[sig] (dec) -- (rf) node[midway, right] {rs1, rs2};
+    \draw[sig] (dec.east) -- (7.58,2.3);
+    \draw[sig] (rf.east) -- (7.58,0.6);
+
+    % ---- EX
+    \node[mux, minimum height=1.3cm, minimum width=0.45cm] (fw) at (8.3,0.6) {};
+    \node[above] at (8.3,1.25) {fwd};
+    \draw[sig] (7.82,0.6) -- (8.08,0.6);
+    \node[blk, minimum width=1.6cm, minimum height=0.8cm] (alu) at (9.8,0.6)  {ALU};
+    \node[blk, minimum width=1.6cm, minimum height=0.8cm] (ea)  at (9.8,2.3)  {$rs1 + imm$};
+    \node[blk, minimum width=1.6cm, minimum height=0.75cm] (br)  at (9.8,3.5) {branch\\check};
+    \node[blk, minimum width=1.6cm, minimum height=0.6cm] (csr) at (9.8,4.45) {CSRs, traps};
+    \node[blk, minimum width=1.6cm, minimum height=0.6cm] (md)  at (9.8,-0.9) {MUL, DIV};
+    \draw[sig] (fw.east) -- (alu.west);
+    \draw[thick] (8.75,-0.9) -- (8.75,3.5);
+    \node[dot] at (8.75,0.6) {};
+    \draw[sig] (8.75,3.5) -- (br.west);
+    \draw[sig] (8.75,2.5) -- (9.0,2.5);
+    \node[dot] at (8.75,2.5) {};
+    \draw[sig] (8.75,-0.9) -- (md.west);
+    \draw[sig] (7.82,2.1) -- (9.0,2.1);
+    \draw[sig] (br) -- (csr);
+    \draw[sig] (alu.east) -- (11.18,0.6);
+    \draw[sig] (md.east) -- (11.18,-0.9);
+    \draw[sig] (ea.east) -- (11.18,2.3);
+    \node[above] at (10.9,2.3) {ea};
+
+    % ---- MEM
+    \node[ram, minimum width=1.5cm, minimum height=1.0cm] (dc) at (12.4,2.3) {D-cache};
+    \node[blk, minimum width=1.5cm, minimum height=0.6cm] (la) at (12.4,1.0) {load align};
+    \draw[sig] (11.42,2.3) -- (dc.west);
+    \draw[sig] (dc) -- (la);
+    \draw[sig] (la.east) -- (13.68,1.0);
+    \draw[thick] (11.42,0.6) -- (11.55,0.6) -- (11.55,-1.3);
+    \draw[thick] (11.42,-0.9) -- (11.55,-0.9);
+    \node[dot] at (11.55,-0.9) {};
+    \draw[sig] (11.55,-1.3) -- (13.68,-1.3);
+    \node[above] at (12.6,-1.3) {result};
+
+    % ---- WB: back into the register file, and forwarding into EX
+    \draw[thick] (13.92,1.0) -- (14.3,1.0) -- (14.3,-2.7) -- (6.0,-2.7);
+    \draw[thick] (13.92,-1.3) -- (14.3,-1.3);
+    \node[dot] at (14.3,-1.3) {};
+    \draw[sig] (6.0,-2.7) -- (rf.south);
+    \node[below] at (10.2,-2.7) {register file write};
+    \draw[sig, densely dashed] (14.3,-2.25) -- (8.3,-2.25) -- (fw.south);
+    \node[dot] at (14.3,-2.25) {};
+    \node[above] at (9.9,-2.25) {forwarding into EX};
+
+    % ---- redirects back to IF, routed over the top
+    \draw[thick] (idq.east) -- (7.3,3.3) -- (7.3,6.0) -- (-0.2,6.0);
+    \node[above] at (3.5,6.0) {predicted taken: \texttt{id\_target}};
+    \draw[thick] (csr.east) -- (10.95,4.45) -- (10.95,6.6) -- (-0.6,6.6);
+    \node[above] at (5.2,6.6) {mispredict, trap, MRET: \texttt{redir\_pc}, one cycle later};
+  \end{tikzpicture}
+  \caption{The pipeline. Gray bars are pipeline registers. The dashed line is the forwarding path into EX.}
+  \label{fig:datapath}
+\end{figure}
+
+\subsection{RAM address rule}
+
+The design follows one rule: no RAM address depends on an operand value or on a stall. An M4K block has a register on its address input. If slow logic drives that input, the slow logic sets the clock period. Each RAM address in the CPU comes from a register, or from a small multiplexer of registers:
+
+\begin{itemize}
+  \item The I-cache reads the address \texttt{fa}. The inputs to \texttt{fa} are the registers \texttt{redir\_pc}, \texttt{id\_target} and \texttt{f\_pc}, and the I-cache hit signal.
+  \item The register file reads the register numbers of the instruction in ID. The data is available in the first EX cycle of that instruction.
+  \item The D-cache reads the effective address \texttt{ea} from EX. A hit completes in the first MEM cycle.
+\end{itemize}
+
+For the same reason, EX does not drive the fetch address directly. When EX finds a mispredicted branch, it writes the correct address to the register \texttt{redir\_pc} and sets \texttt{redir\_r}. Fetch uses \texttt{redir\_pc} in the next cycle.
+
+\subsection{Fetch and the decode queue}
+
+IF selects the next fetch address, \texttt{fa}. Table~\ref{tab:fa} gives the priority.
+
+\begin{guidetable}{The next fetch address, \texttt{fa}}{fa}{l l l}
+condition & \texttt{fa} & why \\
+\midrule
+\texttt{redir\_r} & \texttt{redir\_pc} & EX found a mispredict, trap, MRET, FENCE.I or CSR write last cycle \\
+\texttt{id\_redir\_now} & \texttt{id\_target} & ID holds a predicted-taken jump not yet followed \\
+\texttt{f\_take} & \texttt{f\_pc + 4} & the word in IF2 hit and the queue has room \\
+otherwise & \texttt{f\_pc} & refetch the same address (miss, or queue full) \\
+\end{guidetable}
+
+The decode queue has two entries: the ID entry and a second entry, \texttt{q1}. A fetch enters the queue when the I-cache hits and the queue has a free entry:
+\begin{equation*}
+  f\_take = f\_hit \cdot \overline{f\_kill} \cdot \overline{(id\_valid \cdot q1\_valid)}
+\end{equation*}
+The two valid bits are registers. Thus a stall in EX or MEM does not reach the I-cache address in the same cycle. When EX stalls, fetch continues until the queue is full. Then fetch reads the same address again until an entry is free.
+
+\subsection{Branch prediction}
+
+Branch prediction is static. IF2 examines each instruction from the I-cache and makes these predictions:
+
+\begin{itemize}
+  \item JAL: taken. The target is $pc + imm$.
+  \item Conditional branch with a negative offset (instruction bit 31 set): taken. Most backward branches close a loop.
+  \item Conditional branch with a positive offset: not taken.
+  \item JALR with $rd = x0$ and $rs1 = x1$ or $x5$: a return. The target is the top entry of the return stack.
+  \item All other JALR instructions: no prediction.
+\end{itemize}
+
+The return stack has four entries (\texttt{ras}) and a 2-bit pointer (\texttt{ras\_top}). A JAL or JALR with $rd = x1$ or $x5$ is a call, and pushes $pc + 4$. A return pops one entry. The stack changes when the instruction enters the decode queue. The CPU does not repair the stack after a mispredicted branch. A wrong entry causes one mispredicted return.
+
+A predicted-taken instruction redirects fetch from ID. EX then checks all branches and jumps. If the prediction is wrong, EX sets \texttt{x\_redir} and fetch restarts at the correct address. For JALR, EX compares $rs1 + imm$ with the predicted target. Section~\ref{sec:sumeq} describes the comparator.
+
+\subsection{Forwarding}
+
+EX takes each operand from the first source in Table~\ref{tab:fwd} that holds the register.
+
+\begin{guidetable}{Operand forwarding into EX, highest priority first}{fwd}{l l}
+source & holds \\
+\midrule
+$x0$ & always zero \\
+MEM (\texttt{mem\_res}) & the ALU result of the previous instruction (not a load result) \\
+WB (\texttt{wb\_res}) & the result about to be written \\
+\texttt{w1} & the write retired on the last edge \\
+register file / held operand & everything older \\
+\end{guidetable}
+
+The source \texttt{w1} holds the value that WB wrote on the last clock edge. The register file cannot supply this value, because its read address was latched on the same edge as the write. \texttt{w1} holds the value for one cycle.
+
+The register file is two M4K RAMs with the same contents, one for each read port. WB writes the two RAMs together.
+
+The register file output is valid only in the first EX cycle of an instruction (\texttt{ex\_first}). If the instruction stays in EX, it uses the registers \texttt{ex\_opa} and \texttt{ex\_opb}. These registers latch the forwarded operands on each clock edge.
+
+\subsection{Stalls and their cost}
+
+Figure~\ref{fig:pipe-normal} shows four dependent ALU instructions. Forwarding supplies each operand, and no instruction stalls.
+
+\begin{figure}[H]
+  \centering
+  \begin{pipechart}{9}
+    \pipe{\texttt{add x5,x6,x7}}{IF,IF2,ID,EX,MEM,WB}{1}
+    \pipe{\texttt{sub x8,x5,x9}}{IF,IF2,ID,EX,MEM,WB}{2}
+    \pipe{\texttt{or x10,x8,x5}}{IF,IF2,ID,EX,MEM,WB}{3}
+    \pipe{\texttt{xor x11,x5,x5}}{IF,IF2,ID,EX,MEM,WB}{4}
+  \end{pipechart}
+  \caption{Dependent ALU instructions with no stall. \texttt{sub} takes x5 from MEM. \texttt{or} takes x8 from MEM and x5 from WB. \texttt{xor} takes x5 from \texttt{w1}.}
+  \label{fig:pipe-normal}
+\end{figure}
+
+A load result is available at the end of MEM. The CPU does not forward a load result from MEM (\texttt{mem\_late}). An instruction that uses the result in the next cycle waits one cycle in EX (\texttt{ld\_hazard}). It then takes the result from WB (Figure~\ref{fig:pipe-load}).
+
+\begin{figure}[H]
+  \centering
+  \begin{pipechart}{9}
+    \pipe{\texttt{lw x5,0(x6)}}{IF,IF2,ID,EX,MEM,WB}{1}
+    \pipe{\texttt{add x7,x5,x5}}{IF,IF2,ID,*,EX,MEM,WB}{2}
+    \pipe{\texttt{and x8,x9,x9}}{IF,IF2,*,ID,EX,MEM,WB}{3}
+  \end{pipechart}
+  \caption{The load-use stall. The dashed box is the bubble.}
+  \label{fig:pipe-load}
+\end{figure}
+
+A redirect from ID discards one fetched instruction. A redirect from EX discards three, because the redirect goes through the register \texttt{redir\_r} (Figure~\ref{fig:pipe-branch}).
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{\linewidth}\centering
+  \begin{pipechart}{9}
+    \pipe{\texttt{jal x1,f}}{IF,IF2,ID,EX,MEM,WB}{1}
+    \pipe{wrong path}{IF,IF2}{2}
+    \pipe{\texttt{f:}}{IF,IF2,ID,EX,MEM,WB}{3}
+  \end{pipechart}
+  \caption{Predicted taken in ID: one bubble.}
+  \end{subfigure}
+
+  \medskip
+  \begin{subfigure}{\linewidth}\centering
+  \begin{pipechart}{10}
+    \pipe{\texttt{beq x5,x6,L}}{IF,IF2,ID,EX,MEM,WB}{1}
+    \pipe{wrong path}{IF,IF2,ID}{2}
+    \pipe{wrong path}{IF,IF2}{3}
+    \pipe{wrong path}{IF}{4}
+    \pipe{\texttt{L:}}{IF,IF2,ID,EX,MEM,WB}{5}
+  \end{pipechart}
+  \caption{Mispredicted, found in EX: three bubbles.}
+  \end{subfigure}
+  \caption{The cost of a jump}
+  \label{fig:pipe-branch}
+\end{figure}
+
+Table~\ref{tab:costs} lists the cost of each event.
+
+\begin{guidetable}{Pipeline costs}{costs}{l c}
+event & extra cycles \\
+\midrule
+taken branch or JAL, predicted & 1 \\
+return, correct prediction from the return stack & 1 \\
+mispredicted branch, any other JALR & 3 \\
+load followed by a use of its result & 1 \\
+MUL, MULH, MULHSU, MULHU & 3 (4 cycles in EX) \\
+DIV, DIVU, REM, REMU & 33 (34 cycles in EX) \\
+CSR, SYSTEM, FENCE.I & wait for MEM and WB, then 3 \\
+I-cache or D-cache miss & see Section~\ref{sec:memory} \\
+\end{guidetable}
+
+The emulator measures 2.0 cycles per instruction on \texttt{timedemo demo1}. The previous multicycle CPU used 3.2.
+
+\subsection{Serializing instructions}
+
+These instructions and events wait in EX until MEM and WB are empty (\texttt{ser\_wait}):
+
+\begin{itemize}
+  \item CSR instructions and all other SYSTEM instructions.
+  \item FENCE.I. It also waits until the D-cache write buffer is empty.
+  \item Illegal instructions.
+  \item Interrupts.
+  \item A power-off request from the syscon register.
+\end{itemize}
+
+When the instruction continues, all older instructions have retired. Thus a trap, a counter read or a halt sees the correct state. After a CSR write, the CPU redirects fetch to $pc + 4$. The CPU fetches the subsequent instructions again, and they see the new CSR value.
+
+\subsection{State machines in EX and MEM}
+
+Most instructions use one cycle in EX. Multiply and divide use the state machine in Figure~\ref{fig:exfsm}(a). EX does not accept a new instruction until the state machine returns to \texttt{X\_RUN}.
+
+\begin{figure}[H]
+  \centering
+  \begin{subfigure}{\linewidth}\centering
+  \begin{tikzpicture}[font=\scriptsize]
+    \node[st] (dv)  at (-4.2,0) {X\_DIV};
+    \node[st] (run) at (0,0)    {X\_RUN};
+    \node[st] (m0)  at (4.2,0)  {X\_MUL0};
+    \node[st] (m1)  at (4.2,-2.8) {X\_MUL1};
+    \node[st] (m2)  at (0,-2.8) {X\_MUL2};
+    \draw[tr] (run) -- (m0) node[cond, midway, above] {multiply starts};
+    \draw[tr] (m0) -- (m1) node[cond, midway, right] {partial products};
+    \draw[tr] (m1) -- (m2) node[cond, midway, above] {sum};
+    \draw[tr] (m2) -- (run) node[cond, midway, left] {result};
+    \draw[tr] (run) to[bend right=25] node[cond, above] {divide starts} (dv);
+    \draw[tr] (dv) to[bend right=25] node[cond, below] {count = 0: result} (run);
+    \draw[tr] (dv) to[out=200, in=160, looseness=6] (dv);
+    \node[left, align=right] at (-5.6,0) {count $\neq$ 0:\\one bit};
+  \end{tikzpicture}
+  \caption{EX}
+  \end{subfigure}
+
+  \bigskip
+  \begin{subfigure}{\linewidth}\centering
+  \begin{tikzpicture}[font=\scriptsize]
+    \node[st] (rq) at (0,0) {M\_REQ};
+    \node[st] (c)  at (4.6,0) {M\_AMOC};
+    \node[st] (w)  at (2.3,-2.8) {M\_AMOW};
+    \draw[tr] (rq) -- (c) node[cond, midway, above] {ack, AMO: save the old word};
+    \draw[tr] (c) -- (w) node[cond, midway, right] {\ write the new word};
+    \draw[tr] (w) -- (rq) node[cond, midway, left] {ack\ };
+    \draw[tr] (rq) to[out=200, in=160, looseness=6] (rq);
+    \node[left, align=right] at (-1.4,0) {load or store:\\complete on ack};
+  \end{tikzpicture}
+  \caption{MEM}
+  \end{subfigure}
+  \caption{The state machines in EX and MEM}
+  \label{fig:exfsm}
+\end{figure}
+
+A load or a store completes in \texttt{M\_REQ} when the D-cache acknowledges it. An AMO instruction uses three states:
+
+\begin{enumerate}
+  \item \texttt{M\_REQ}: read the memory word and save it in \texttt{amo\_old}.
+  \item \texttt{M\_AMOC}: calculate the new value.
+  \item \texttt{M\_AMOW}: write the new value. The old value goes to $rd$.
+\end{enumerate}
+
+The CPU is the only bus master that writes memory, so the read and the write are atomic without a bus lock.
+
+LR.W saves the word address in \texttt{lr\_addr} and sets \texttt{lr\_valid}. SC.W writes only if \texttt{lr\_valid} is set and the address is the same. SC.W and a trap clear \texttt{lr\_valid}.

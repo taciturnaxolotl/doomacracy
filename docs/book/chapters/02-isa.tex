@@ -1,0 +1,94 @@
+\section{Instruction set}
+\label{sec:isa}
+
+The CPU implements RV32IMA with Zicsr, in machine mode and user mode:
+
+\begin{itemize}
+  \item I: the 32-bit base integer instructions.
+  \item M: multiply and divide.
+  \item A: atomic memory operations.
+  \item Zicsr: the control and status registers (CSRs).
+\end{itemize}
+
+Doom uses only RV32IM. Linux uses the A extension, the two privilege modes and the interrupts.
+
+\subsection{Instruction formats}
+
+Each instruction is 32 bits. There are six formats (Figure~\ref{fig:formats}). The fields rs1, rs2 and rd are at the same bit positions in all formats. Thus the register file can start a read before the decoder identifies the instruction.
+
+\begin{figure}[H]
+  \centering
+  \begin{bitfield}{32}
+    \begin{scope}[yshift=0cm]
+      \bitname{R}\bits{31}{25}{funct7}\bits{24}{20}{rs2}\bits{19}{15}{rs1}\bits{14}{12}{f3}\bits{11}{7}{rd}\bits*{6}{0}{opcode}
+    \end{scope}
+    \begin{scope}[yshift=-1.55cm]
+      \bitname{I}\bits{31}{20}{imm[11:0]}\bits{19}{15}{rs1}\bits{14}{12}{f3}\bits{11}{7}{rd}\bits*{6}{0}{opcode}
+    \end{scope}
+    \begin{scope}[yshift=-3.1cm]
+      \bitname{S}\bits{31}{25}{imm[11:5]}\bits{24}{20}{rs2}\bits{19}{15}{rs1}\bits{14}{12}{f3}\bits{11}{7}{imm[4:0]}\bits*{6}{0}{opcode}
+    \end{scope}
+    \begin{scope}[yshift=-4.65cm]
+      \bitname{B}\bits{31}{25}{\scriptsize imm[12$|$10:5]}\bits{24}{20}{rs2}\bits{19}{15}{rs1}\bits{14}{12}{f3}\bits{11}{7}{\scriptsize imm[4:1$|$11]}\bits*{6}{0}{opcode}
+    \end{scope}
+    \begin{scope}[yshift=-6.2cm]
+      \bitname{U}\bits{31}{12}{imm[31:12]}\bits{11}{7}{rd}\bits*{6}{0}{opcode}
+    \end{scope}
+    \begin{scope}[yshift=-7.75cm]
+      \bitname{J}\bits{31}{12}{imm[20$|$10:1$|$11$|$19:12]}\bits{11}{7}{rd}\bits*{6}{0}{opcode}
+    \end{scope}
+  \end{bitfield}
+  \caption{The six RISC-V instruction formats}
+  \label{fig:formats}
+\end{figure}
+
+Table~\ref{tab:imm} shows how each format builds its immediate. Instruction bit 31 is always the sign bit. When two formats have the same immediate bit, the bit usually comes from the same instruction bit. This keeps the multiplexers in the immediate generator small.
+
+\begin{guidetable}{The source of each immediate bit (instruction bit numbers)}{imm}{l c c c c c c}
+format & imm[31:20] & imm[19:12] & imm[11] & imm[10:5] & imm[4:1] & imm[0] \\
+\midrule
+I & sign (31) & sign & 31 & 30:25 & 24:21 & 20 \\
+S & sign & sign & 31 & 30:25 & 11:8 & 7 \\
+B & sign & sign & 7 & 30:25 & 11:8 & 0 \\
+U & 31:20 & 19:12 & 0 & 0 & 0 & 0 \\
+J & sign & 19:12 & 20 & 30:25 & 24:21 & 0 \\
+\end{guidetable}
+
+\subsection{Opcodes}
+
+Instruction bits 6:0 are the opcode. Table~\ref{tab:opcodes} lists the opcodes that the CPU accepts. All other opcodes cause an illegal instruction exception. The function \texttt{is\_illegal} in \src{rtl/cpu.vhd} contains the full check.
+
+\begin{guidetable}{Major opcodes}{opcodes}{l l l l l}
+opcode & name & format & what it does & reads \\
+\midrule
+\texttt{0110111} & LUI    & U & $rd \leftarrow imm$ & -- \\
+\texttt{0010111} & AUIPC  & U & $rd \leftarrow pc + imm$ & -- \\
+\texttt{1101111} & JAL    & J & $rd \leftarrow pc+4$, jump $pc + imm$ & -- \\
+\texttt{1100111} & JALR   & I & $rd \leftarrow pc+4$, jump $(rs1 + imm)\,\&\,{\sim}1$ & rs1 \\
+\texttt{1100011} & BRANCH & B & if $rs1 \mathrel{?} rs2$, jump $pc+imm$ & rs1, rs2 \\
+\texttt{0000011} & LOAD   & I & $rd \leftarrow mem[rs1+imm]$ & rs1 \\
+\texttt{0100011} & STORE  & S & $mem[rs1+imm] \leftarrow rs2$ & rs1, rs2 \\
+\texttt{0010011} & OP-IMM & I & $rd \leftarrow rs1 \mathbin{op} imm$ & rs1 \\
+\texttt{0110011} & OP     & R & $rd \leftarrow rs1 \mathbin{op} rs2$, and M & rs1, rs2 \\
+\texttt{0001111} & FENCE  & I & FENCE: no operation. FENCE.I: clear the I-cache & -- \\
+\texttt{1110011} & SYSTEM & I & CSRs, ECALL, EBREAK, MRET, WFI & rs1 (CSR) \\
+\texttt{0101111} & AMO    & R & LR, SC, AMO*.W & rs1, rs2 \\
+\end{guidetable}
+
+The ``reads'' column shows which source registers the instruction uses. The decoder records this in \texttt{id\_u1} and \texttt{id\_u2}. EX uses these flags for the load-use check (Section~\ref{sec:pipeline}). An instruction does not stall for a register that it does not read. For example, bits 19:15 of a LUI are part of the immediate, not a register number.
+
+\subsection{Load and store sizes}
+
+For LOAD and STORE, funct3 bits 1:0 give the size. For LOAD, funct3 bit 2 selects zero extension (Table~\ref{tab:sizes}).
+
+\begin{guidetable}{Load and store sizes}{sizes}{c l l c}
+funct3 & load & store & alignment needed \\
+\midrule
+\texttt{000} & LB (sign-extend) & SB & none \\
+\texttt{001} & LH (sign-extend) & SH & 2 bytes \\
+\texttt{010} & LW               & SW & 4 bytes \\
+\texttt{100} & LBU (zero-extend) & -- & none \\
+\texttt{101} & LHU (zero-extend) & -- & 2 bytes \\
+\end{guidetable}
+
+The hardware does not split a misaligned access into two accesses. When a trap handler is installed, a misaligned access causes a trap (cause 4 or 6). Linux then emulates the access. When no trap handler is installed, the access continues without a trap and the result is not defined.

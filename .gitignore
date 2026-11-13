@@ -20,3 +20,6 @@ sim/jtagtest/*.bin
 sim/jtagtest/*.hex
 sim/ps2test/*.elf
 sim/ps2test/*.bin
+
+# the manual is built with `make book`
+docs/book/doomacracy.pdf

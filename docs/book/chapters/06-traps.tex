@@ -1,0 +1,144 @@
+\section{Privilege, CSRs and traps}
+\label{sec:traps}
+
+Doom runs in machine mode and does not use traps. Linux uses user mode, system calls, the timer interrupt, the keyboard interrupt and the misaligned access traps. The CPU implements the machine-mode part of the RISC-V privileged architecture. The logic is in EX and MEM.
+
+\subsection{CSR map}
+
+Table~\ref{tab:csrs} lists the CSRs. A read of any other CSR number gives 0. A write to any other CSR number has no effect. There is no trap for an unknown CSR.
+
+\begin{guidetable}{Control and status registers}{csrs}{l l l l}
+number & name & access & contents \\
+\midrule
+\texttt{0x300} & mstatus  & RW & MIE (3), MPIE (7), MPP (12:11) \\
+\texttt{0x301} & misa     & R  & \texttt{0x40101101}: RV32, A, I, M, U \\
+\texttt{0x304} & mie      & RW & MSIE (3), MTIE (7), MEIE (11) \\
+\texttt{0x305} & mtvec    & RW & trap vector. Bit 0 = vectored interrupts \\
+\texttt{0x340} & mscratch & RW & scratch for the trap handler \\
+\texttt{0x341} & mepc     & RW & pc of the trapping instruction (bits 1:0 forced 0) \\
+\texttt{0x342} & mcause   & RW & trap cause \\
+\texttt{0x343} & mtval    & RW & bad address or instruction \\
+\texttt{0x344} & mip      & R  & MSIP (3), MTIP (7), MEIP (11), straight from the wires \\
+\texttt{0xC00}, \texttt{0xB00} & cycle    & R & low word of the cycle counter \\
+\texttt{0xC80}, \texttt{0xB80} & cycleh   & R & high word \\
+\texttt{0xC01} & time     & R  & low word of \texttt{mtime} from the CLINT (microseconds) \\
+\texttt{0xC81} & timeh    & R  & high word \\
+\texttt{0xC02}, \texttt{0xB02} & instret  & R & low word of instructions retired \\
+\texttt{0xC82}, \texttt{0xB82} & instreth & R & high word \\
+\end{guidetable}
+
+Figure~\ref{fig:mstatus} shows the bits of \texttt{mstatus}, \texttt{mie} and \texttt{mip}. The E bits are for the external interrupt (the keyboard). The T bits are for the timer interrupt. The S bits are for the software interrupt.
+
+\begin{figure}[H]
+  \centering
+  \begin{bitfield}{13}
+    \begin{scope}
+      \bitname{mstatus}
+      \bits{12}{11}{MPP}\bits*{10}{8}{0}\bits{7}{7}{MPIE}\bits*{6}{4}{0}\bits{3}{3}{MIE}\bits*{2}{0}{0}
+    \end{scope}
+    \begin{scope}[yshift=-1.55cm]
+      \bitname{mie}
+      \bits*{12}{12}{0}\bits{11}{11}{MEIE}\bits*{10}{8}{0}\bits{7}{7}{MTIE}\bits*{6}{4}{0}\bits{3}{3}{MSIE}\bits*{2}{0}{0}
+    \end{scope}
+    \begin{scope}[yshift=-3.1cm]
+      \bitname{mip}
+      \bits*{12}{12}{0}\bits{11}{11}{MEIP}\bits*{10}{8}{0}\bits{7}{7}{MTIP}\bits*{6}{4}{0}\bits{3}{3}{MSIP}\bits*{2}{0}{0}
+    \end{scope}
+  \end{bitfield}
+  \caption{The interrupt state registers, bits 12 to 0. All higher bits read as zero.}
+  \label{fig:mstatus}
+\end{figure}
+
+A CSR instruction reads the old CSR value into $rd$ and writes a new value. The write source is rs1, or the 5-bit field in instruction bits 19:15 for the immediate forms (Table~\ref{tab:csrops}).
+
+\begin{guidetable}{CSR instructions}{csrops}{c l l l}
+funct3 & instruction & new value & writes when \\
+\midrule
+\texttt{001} & CSRRW  & $src$ & always \\
+\texttt{010} & CSRRS  & $old \lor src$ & rs1 field $\ne 0$ \\
+\texttt{011} & CSRRC  & $old \land \lnot src$ & rs1 field $\ne 0$ \\
+\texttt{101} & CSRRWI & $uimm$ & always \\
+\texttt{110} & CSRRSI & $old \lor uimm$ & uimm $\ne 0$ \\
+\texttt{111} & CSRRCI & $old \land \lnot uimm$ & uimm $\ne 0$ \\
+\end{guidetable}
+
+\subsection{The \texttt{traps\_on} flag}
+
+The CPU sets the flag \texttt{traps\_on} when software writes a value other than 0 to \texttt{mtvec}. While \texttt{traps\_on} is 0, the CPU does not take traps:
+
+\begin{itemize}
+  \item ECALL, EBREAK and an illegal instruction stop the CPU. The \texttt{halted} output goes high and LEDR9 comes on.
+  \item A load, store or fetch that has a fault condition continues without a trap.
+  \item Interrupts stay off, because reset clears \texttt{mie}.
+\end{itemize}
+
+The emulator has the same behavior. A bare-metal program that executes a bad instruction stops at that instruction. It does not jump to a trap handler at address 0.
+
+\subsection{Exceptions}
+
+EX checks the instruction for exceptions in the order of Table~\ref{tab:causes}. The first condition that is true gives the cause.
+
+\begin{guidetable}{Synchronous exceptions, in the order EX checks them}{causes}{c l l l}
+mcause & exception & caused by & mtval \\
+\midrule
+0 & instruction address misaligned & fetch with pc[1:0] $\ne 0$ & pc \\
+1 & instruction access fault & fetch outside ROM, SRAM, SDRAM & pc \\
+2 & illegal instruction & anything \texttt{is\_illegal} rejects & the instruction \\
+11 / 8 & ECALL & from M / from U & 0 \\
+3 & EBREAK & & pc \\
+4 & load address misaligned & LH, LW at an odd address & address \\
+5 & load access fault & outside the memory map & address \\
+6 & store/AMO address misaligned & & address \\
+7 & store/AMO access fault & outside the map, or to ROM & address \\
+\end{guidetable}
+
+IF2 detects a fetch fault, but the trap occurs in EX. The CPU does not send the bad fetch to the I-cache. A NOP with a fault code (\texttt{id\_fault}) goes through the pipeline in its place. Thus all older instructions complete before the trap.
+
+EX detects a load or store fault from the effective address. The trap occurs one cycle later, when the instruction is in MEM (\texttt{mem\_exc}). This keeps the address adder out of the logic that flushes the pipeline.
+
+\subsection{Interrupts}
+
+The CPU takes an interrupt when all of these conditions are true:
+
+\begin{itemize}
+  \item The \texttt{mip} bit of the interrupt is 1.
+  \item The \texttt{mie} bit of the interrupt is 1.
+  \item \texttt{mstatus.MIE} is 1, or the CPU is in user mode (U).
+\end{itemize}
+\begin{equation*}
+  \mathit{take} = (\mathrm{MTIP}\cdot\mathrm{MTIE} + \mathrm{MSIP}\cdot\mathrm{MSIE} + \mathrm{MEIP}\cdot\mathrm{MEIE})\cdot(\mathrm{MIE} + \mathrm{U})
+\end{equation*}
+The CPU takes an interrupt in EX. The instruction in EX waits until MEM and WB are empty. Then the trap replaces the instruction, and \texttt{mepc} points to it. If more than one interrupt is pending, the order of priority is external, software, timer (Table~\ref{tab:irqs}).
+
+\begin{guidetable}{Interrupt causes}{irqs}{l l l}
+mcause & interrupt & source \\
+\midrule
+\texttt{0x8000000B} & machine external & PLIC, from the PS/2 receiver \\
+\texttt{0x80000003} & machine software & CLINT \texttt{msip} \\
+\texttt{0x80000007} & machine timer    & CLINT, $mtime \ge mtimecmp$ \\
+\end{guidetable}
+
+\subsection{Trap entry and MRET}
+
+Figure~\ref{fig:trapflow} shows the state changes for trap entry and for MRET. Each sequence occurs on one clock edge.
+
+\begin{figure}[H]
+  \centering
+  \begin{tikzpicture}[node distance=0.4cm and 0.6cm]
+    \node[box, text width=4.8cm] (a) {\texttt{mepc} $\leftarrow$ pc\\\texttt{mcause} $\leftarrow$ cause, \texttt{mtval} $\leftarrow$ tval};
+    \node[box, text width=4.8cm, below=of a] (b) {MPIE $\leftarrow$ MIE,\quad MIE $\leftarrow$ 0};
+    \node[box, text width=4.8cm, below=of b] (c) {MPP $\leftarrow$ old privilege, enter M\\clear the LR reservation};
+    \node[box, text width=4.8cm, below=of c] (d) {flush ID, q1 and EX\\(and MEM, if trapping from MEM)};
+    \node[box, text width=4.8cm, below=of d] (e) {\texttt{redir\_pc} $\leftarrow$ \texttt{mtvec}\\(vectored interrupts: \texttt{mtvec} + 4 $\times$ cause)};
+    \node[draw, thick, dashed, fit=(a)(e), inner sep=6pt, label=above:{\small trap entry}] {};
+
+    \node[box, text width=4.8cm, right=2.0cm of b] (m1) {privilege $\leftarrow$ M if MPP = 3, else U};
+    \node[box, text width=4.8cm, below=of m1] (m2) {MIE $\leftarrow$ MPIE,\quad MPIE $\leftarrow$ 1\\MPP $\leftarrow$ U};
+    \node[box, text width=4.8cm, below=of m2] (m3) {\texttt{redir\_pc} $\leftarrow$ \texttt{mepc}};
+    \node[draw, thick, dashed, fit=(m1)(m3), inner sep=6pt, label=above:{\small MRET}] {};
+  \end{tikzpicture}
+  \caption{Trap entry and MRET}
+  \label{fig:trapflow}
+\end{figure}
+
+User mode has one effect in this CPU: an ECALL from user mode gives cause 8, and an ECALL from machine mode gives cause 11. There is no memory protection. Linux runs without an MMU, and all processes use one address space.

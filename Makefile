@@ -398,3 +398,13 @@ $(BUILD)/linux-flash.bin: $(LINUX_IMAGE) $(BUILD)/doomacracy-8mb.dtb tools/mklin
 	$(PYTHON) tools/mklinuxflash.py $(LINUX_IMAGE) $(BUILD)/doomacracy-8mb.dtb $@
 .PHONY: linux-flash
 linux-flash: $(BUILD)/linux-flash.bin
+
+# ======================================================================
+# Hardware reference manual (docs/book, LaTeX)
+# ======================================================================
+#   make book   build docs/book/doomacracy.pdf (needs latexmk and TeX Live)
+.PHONY: book
+book:
+	cd docs/book && latexmk -pdf -interaction=nonstopmode -halt-on-error -output-directory=build main.tex
+	cp docs/book/build/main.pdf docs/book/doomacracy.pdf
+	@echo "-> docs/book/doomacracy.pdf"

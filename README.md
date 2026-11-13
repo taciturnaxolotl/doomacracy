@@ -2,7 +2,7 @@
 
 ![title screen, captured from the VGA pins in the VHDL simulation](docs/title-rtl.png)
 
-Doom on a Terasic DE1, running on a homemade RV32IM CPU written in VHDL. See [spec.md](spec.md) for the memory map, registers and flash layout, and [sw/README.md](sw/README.md) for the software and the emulator.
+Doom on a Terasic DE1, running on a homemade RV32IM CPU written in VHDL. See [spec.md](spec.md) for the memory map, registers and flash layout, and [sw/README.md](sw/README.md) for the software and the emulator. `make book` builds a hardware reference manual with block diagrams, state machines and timing from [docs/book](docs/book).
 
 The majority of this project was done with llms as a what if question on whether this was even possible.
 
@@ -17,6 +17,7 @@ make soc-test          # whole board in nvc with chip models
 make soc-boot          # boot the real firmware in nvc and compare with the emulator
 make rom               # adds back boot rom
 make qar               # build/doomacracy.qar Quartus archive
+make book              # docs/book/doomacracy.pdf, the hardware reference manual (needs TeX Live)
 ```
 
 The WAD is not bundled with the repo; put the shareware `doom1.wad` in `wad/`.
