@@ -127,6 +127,10 @@ and spins with the LEDs showing an error.
 
 ## Performance
 
+CoreMark 1.0 from SRAM, `-O2`: 121.6 (2.43 CoreMark/MHz) in the emulator's
+cycle model, and 2.40 CoreMark/MHz over a 10 iteration run in RTL simulation.
+See `sw/README.md`, "CoreMark".
+
 From the emulator's cycle model of this RTL (`--timing`), on `-timedemo
 demo1`: CPI about 2.0, against 3.2 for the multicycle core it replaced
 (roughly 22 fps where that one made 16). In RTL simulation the pipeline

@@ -31,6 +31,9 @@ that is not on PATH.
 | `make demo-emu` | menu, new game, gameplay from `sw/doom/keys-demo.txt`, `build/frames/play-*.png` |
 | `make attract-emu` | title and attract-mode demos, `build/frames/attract-*.png` |
 | `make bench-emu` | `-timedemo demo1` (SW0 up), prints instructions between page flips |
+| `make coremark` | CoreMark firmware, `build/coremark-flash.bin` |
+| `make coremark-emu` | run CoreMark in the emulator's cycle model and print the score |
+| `make coremark-sim` | a 10 iteration CoreMark run in the RTL simulation (RTL section) |
 | `make sw-clean` | remove the software outputs |
 
 Outputs:
@@ -116,6 +119,44 @@ result is printed on the UART).
 The firmware reads the version byte of DEMO1 and passes `-gameversion` to
 match (the v1.8 shareware demos are version 108; without this chocolate
 Doom assumes 1.9 and refuses to play them).
+
+## CoreMark
+
+`sw/coremark` is a second firmware: EEMBC CoreMark 1.0, running from SRAM and
+printing its report on the UART. The benchmark sources are not in this repo.
+The first build clones `eembc/coremark` into `third_party/coremark` at a
+pinned commit, and they are compiled unchanged with the same flags as Doom
+(`CM_OPT` changes them; the report prints the flags it was built with).
+
+It runs twice, as EEMBC's rules ask: the performance seeds, then the
+validation seeds. Both reports must say `Correct operation validated`, and
+the score is the `CoreMark 1.0` line of the first. Divide by 50 for
+CoreMark/MHz. After each report the port adds the cycles, instructions and
+cycles per instruction of the timed part, from the CPU's own counters.
+
+```
+make coremark-emu            # emulator cycle model: about 30 s of machine time
+make coremark-sim            # RTL in nvc, 10 iterations, about 4 minutes
+make coremark-emu CM_ITER=10 # the model on the binary coremark-sim ran
+```
+
+`coremark-sim` is too short to be a valid score, but its counts are the
+RTL's own, so it checks the model. With 10 iterations the instruction counts
+and CRCs match exactly and the RTL takes 1.4% more cycles than the model:
+
+| | CoreMark | CoreMark/MHz | CPI |
+| --- | --- | --- | --- |
+| emulator cycle model, full run | 121.6 | 2.43 | 1.38 |
+| RTL simulation, 10 iterations | 119.8 | 2.40 | 1.40 |
+
+On the board: load `build/coremark-flash.bin` with `jtag_flash.tcl` as for
+`flash.bin` (only the first two 64 KB regions change, so swapping back to
+Doom is quick) and read the RS-232 port at 115200. HEX shows `C001` and
+`C002` during the two runs and `00FF` when it has finished and powered off.
+
+The idea of running both seed sets from one program, and CoreMark as the
+benchmark, come from builderdev212's
+[ai-fpga-sdp](https://github.com/builderdev212/ai-fpga-sdp) Nios V port.
 
 ## Emulator
 

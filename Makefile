@@ -18,6 +18,8 @@ all: sw emu
 #   make demo-emu  menu, new game, gameplay from a key script (build/frames/play-*)
 #   make attract-emu  title and attract-mode demos (build/frames/attract-*)
 #   make bench-emu timedemo demo1 (instructions per frame)
+#   make coremark      EEMBC CoreMark firmware (build/coremark-flash.bin)
+#   make coremark-emu  run CoreMark in the emulator's cycle model
 #   make sw-clean  remove software build outputs
 #
 # Toolchain: riscv32-none-elf-gcc whose newlib/libgcc are built for
@@ -171,9 +173,77 @@ attract-emu: sw emu
 bench-emu: sw emu
 	$(EMU_RUN) --switches 1
 
+# ---------------------------------------------------------------- CoreMark
+
+# EEMBC CoreMark as a second firmware (sw/coremark). The benchmark sources
+# are not in this repo: the first build fetches them into
+# third_party/coremark at a pinned commit, and they are compiled unchanged.
+#
+#   make coremark       build/coremark-flash.bin (load it like flash.bin)
+#   make coremark-emu   run it in the emulator's cycle model of the RTL
+#   make coremark-sim   a short run in the RTL simulation (see the RTL section)
+#
+# CM_ITER=N fixes the iteration count; 0 lets CoreMark pick one that runs for
+# the 10 seconds a valid score needs. CM_OPT changes the optimisation flags.
+CM        := third_party/coremark
+CM_COMMIT := 1f483d5b8316753a742cbf5590caf5bd0a4e4777
+CM_OPT    ?= -O2
+CM_ITER   ?= 0
+CM_TAG    := coremark$(if $(filter 0,$(CM_ITER)),,-i$(CM_ITER))
+CM_B      := $(SWB)/$(CM_TAG)
+CM_FLASH  := $(BUILD)/$(CM_TAG)-flash
+CM_FLAGS  := $(RV_ARCH) $(CM_OPT) -mstrict-align -fno-pic
+CM_CFLAGS := $(CM_FLAGS) -DFLAGS_STR='"$(CM_FLAGS)"' -DITERATIONS=$(CM_ITER) \
+             -Isw/coremark -I$(CM) -Isw/include
+CM_OBJS   := $(addprefix $(CM_B)/,core_main.o core_list_join.o core_matrix.o core_state.o \
+               core_util.o core_portme.o syscalls.o crt0.o)
+
+$(CM)/.pinned:
+	@mkdir -p third_party
+	[ -d $(CM)/.git ] || git clone -q https://github.com/eembc/coremark.git $(CM)
+	git -C $(CM) checkout -q $(CM_COMMIT)
+	@touch $@
+
+$(CM_B)/core_portme.o $(CM_B)/syscalls.o: $(CM_B)/%.o: sw/coremark/%.c sw/coremark/core_portme.h \
+    sw/include/doomacracy_hw.h $(CM)/.pinned
+	@mkdir -p $(@D)
+	$(CC_RV) $(CM_CFLAGS) -Wall -c $< -o $@
+
+$(CM_B)/crt0.o: sw/doom/crt0.S
+	@mkdir -p $(@D)
+	$(CC_RV) $(RV_ARCH) -c $< -o $@
+
+$(CM_B)/core_%.o: $(CM)/.pinned sw/coremark/core_portme.h
+	@mkdir -p $(@D)
+	$(CC_RV) $(CM_CFLAGS) -c $(CM)/core_$*.c -o $@
+
+$(CM_B)/coremark.elf: $(CM_OBJS) sw/coremark/coremark.ld
+	$(CC_RV) $(RV_ARCH) -nostartfiles -T sw/coremark/coremark.ld -Wl,--gc-sections \
+	  -Wl,--no-warn-rwx-segments -Wl,-Map,$(CM_B)/coremark.map -o $@ $(CM_OBJS) -lm -lc -lgcc
+	@$(SIZE) $@
+
+$(CM_B)/coremark.bin: $(CM_B)/coremark.elf
+	$(OBJCOPY) -O binary -j .text -j .init_array -j .rodata -j .data $< $@
+
+$(CM_FLASH).bin: $(CM_B)/coremark.bin tools/mkflash.py
+	@mkdir -p $(BUILD)
+	$(PYTHON) tools/mkflash.py --firmware $< --wad /dev/null --load 0x10000000 \
+	  --entry 0x10000000 --out $@ --hex $(CM_FLASH).hex
+
+.PHONY: coremark coremark-emu
+coremark: $(CM_FLASH).bin
+
+# the cache sizes are the RTL's (512 lines each)
+coremark-emu: boot emu $(CM_FLASH).bin
+	$(BUILD)/emu --boot $(BUILD)/boot.bin --flash $(CM_FLASH).bin --timing \
+	  --icache-bits 9 --dcache-bits 9 --quiet | tee $(BUILD)/$(CM_TAG)-emu.txt
+	@awk '/^CoreMark 1.0/ { printf "\nCoreMark %.2f, %.3f CoreMark/MHz (emulator cycle model)\n", $$4, $$4 / 50; exit }' \
+	  $(BUILD)/$(CM_TAG)-emu.txt
+
 sw-clean:
 	rm -rf $(SWB) $(BUILD)/boot.bin $(BUILD)/boot_rom_init.txt $(BUILD)/flash.bin \
-	  $(BUILD)/flash.hex $(BUILD)/doom1-stripped.wad $(BUILD)/emu $(BUILD)/frames
+	  $(BUILD)/flash.hex $(BUILD)/doom1-stripped.wad $(BUILD)/emu $(BUILD)/frames \
+	  $(BUILD)/coremark*
 
 # ======================================================================
 # END software section
@@ -234,6 +304,19 @@ soc-boot: rom sw emu
 	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=$(BUILD)/flash.hex \
 	    -gTRACE=$(BUILD)/rtl_trace.txt -gTRACE_MAX=$(TRACE_N) -gMAX_MS=1000 -gDUMP_EVERY=10 -r
 	$(PYTHON) tools/cmptrace.py $(BUILD)/emu_trace.txt $(BUILD)/rtl_trace.txt
+
+# CoreMark in the RTL simulation. It runs only CM_SIM_ITER iterations, so
+# CoreMark rejects the score as too short, but the cycle and instruction
+# counts are the RTL's own. `make coremark-emu CM_ITER=<same>` gives the
+# emulator's figures for the same binary.
+CM_SIM_ITER ?= 10
+.PHONY: coremark-sim coremark-sim-run
+coremark-sim: rom
+	$(MAKE) CM_ITER=$(CM_SIM_ITER) coremark-sim-run
+coremark-sim-run: $(CM_FLASH).bin
+	@mkdir -p sim/out
+	$(NVCW) -a $(RTL) $(SIM) -e tb_soc -gFLASH=$(CM_FLASH).hex -gMAX_MS=3000 \
+	    -gDUMP_EVERY=1000000 -r | grep -v '^\[tb\] [0-9]' | tee $(BUILD)/$(CM_TAG)-sim.txt
 
 # JTAG loader end to end: flash holding something else (so the changed
 # sector has to be erased), SW9 up, the stand-in JTAG port plays
