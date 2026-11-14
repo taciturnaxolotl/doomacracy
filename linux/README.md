@@ -69,22 +69,29 @@ including the loop), a system call, and starting a process. The last line
 checks the cycle counter against the wall clock (it should read 50 MHz).
 The table fits the 53x25 screen, since there is no pager.
 
-In the emulator with `--timing` the same table comes from the RTL cycle
-model, so the two can be compared row by row. Model, at 50 MHz:
+In the emulator with `--timing --icache-bits 9 --dcache-bits 9` the same
+table comes from the RTL cycle model, so the two can be compared row by row.
+Measured on the DE1 (the cycle counter read 50.0 MHz) against the model:
 
-```
-doombench x1     ms     rate        CPI
-alu             209    14.36 Mop/s  2.05
-mul              34     3.71 M/s    2.65
-div              45     1.11 M/s    9.99
-qsort 1K         78    39.21 Kel/s  2.60
-read 4K          71    28.07 MB/s   2.42
-read 128K       111    18.03 MB/s   3.72
-write 4K         66    30.41 MB/s   3.49
-write 128K       67    29.86 MB/s   3.52
-memcpy 64K       86    11.61 MB/s   3.46
-lat 4K           14      279 ns     13.9 cyc
-lat 128K         34      673 ns     33.5 cyc
-syscall          75    66.62 K/s    2.93
-spawn           147    54.57 /s     5.21
-```
+| test | board ms | board rate | board CPI | model ms | model CPI |
+| --- | --- | --- | --- | --- | --- |
+| alu | 579 | 20.74 Mop/s | 1.43 | 573 | 1.42 |
+| mul | 125 | 4.02 M/s | 2.44 | 123 | 2.41 |
+| div | 161 | 1.24 M/s | 9.35 | 160 | 9.24 |
+| qsort 1K | 177 | 69.24 Kel/s | 1.45 | 175 | 1.43 |
+| read 4K | 152 | 52.57 MB/s | 1.30 | 152 | 1.30 |
+| read 128K | 319 | 25.04 MB/s | 2.71 | 315 | 2.67 |
+| write 4K | 178 | 45.05 MB/s | 2.37 | 174 | 2.31 |
+| write 128K | 177 | 45.08 MB/s | 2.37 | 173 | 2.31 |
+| memcpy 64K | 233 | 17.15 MB/s | 2.36 | 225 | 2.27 |
+| lat 4K | 41 | 207 ns | 10.3 cyc | 41 | 10.3 cyc |
+| lat 128K | 108 | 541 ns | 27.0 cyc | 119 | 29.7 cyc |
+| syscall | 186 | 107.53 K/s | 1.83 | 184 | 1.81 |
+| spawn | 108 | 73.96 /s | 4.33 | 94 | 3.41 |
+
+Eleven of the thirteen rows agree within 4%. The two that do not are
+`lat 128K` (the board is 9% faster) and `spawn` (the board is 27% slower).
+The likely reason, not yet checked, is that both depend on where things land
+in SDRAM: in `lat 128K` every load misses the cache, so the cost is which
+rows happen to be open, and `spawn` depends on where the kernel finds room
+for the new process.

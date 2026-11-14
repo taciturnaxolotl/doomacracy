@@ -332,6 +332,45 @@ The CPU and the emulator each write a trace with one line for each retired instr
   \label{fig:cosim}
 \end{figure}
 
+\subsubsection{CoreMark}
+The directory \src{sw/coremark} holds a second firmware, the EEMBC CoreMark benchmark. It runs from SRAM and sends its report to the UART. The build gets the benchmark source from the EEMBC repository and compiles it without changes.
+
+The firmware runs the benchmark two times, with the performance seeds and then with the validation seeds. After each run it prints the cycles, the instructions and the cycles for each instruction, from the \texttt{mcycle} and \texttt{minstret} counters. Table~\ref{tab:coremark} gives the results. In the two rows, the instruction counts and the checksums are the same for an equal number of iterations.
+
+\begin{guidetable}{CoreMark results (GCC 15.3, \texttt{-O2}, code and data in SRAM)}{coremark}{l c c c}
+source & CoreMark & CoreMark/MHz & cycles per instruction \\
+\midrule
+emulator cycle model, full run & 121.6 & 2.43 & 1.38 \\
+RTL simulation, 10 iterations & 119.8 & 2.40 & 1.40 \\
+\end{guidetable}
+
+A run of 10 iterations is shorter than the 10 seconds that the CoreMark rules require. Thus the RTL simulation result is a check of the cycle model and not a score.
+
+\subsubsection{doombench}
+The program \src{linux/doombench/doombench.c} is a benchmark that runs in Linux. Each test does a fixed quantity of work. For each test, the program prints the time, a rate and the cycles for each instruction. The program reads the cycle and instruction counts from the \texttt{cycle} and \texttt{instret} CSRs.
+
+Table~\ref{tab:doombench} compares the DE1 board with the emulator cycle model. For the two \texttt{lat} tests, the value is cycles for each load. For 11 of the 13 tests, the difference is less than 4\%. The two other tests are \texttt{lat 128K} and \texttt{spawn}. These tests depend on the SDRAM addresses that the kernel gives to the program. The addresses are possibly not the same on the board and in the emulator. This is the probable cause of the difference, but it is not confirmed.
+
+\begin{guidetable}{doombench results: DE1 board and emulator cycle model}{doombench}{l l r r r r}
+ & & \multicolumn{2}{c}{board} & \multicolumn{2}{c}{model} \\
+\cmidrule(lr){3-4}\cmidrule(lr){5-6}
+test & work & ms & CPI & ms & CPI \\
+\midrule
+alu        & add, XOR, shift, AND         & 579 & 1.43 & 573 & 1.42 \\
+mul        & multiply                     & 125 & 2.44 & 123 & 2.41 \\
+div        & divide and remainder         & 161 & 9.35 & 160 & 9.24 \\
+qsort 1K   & sort of 1024 words           & 177 & 1.45 & 175 & 1.43 \\
+read 4K    & reads, buffer in the D-cache & 152 & 1.30 & 152 & 1.30 \\
+read 128K  & reads, buffer in SDRAM       & 319 & 2.71 & 315 & 2.67 \\
+write 4K   & writes, 4 KB buffer          & 178 & 2.37 & 174 & 2.31 \\
+write 128K & writes, 128 KB buffer        & 177 & 2.37 & 173 & 2.31 \\
+memcpy 64K & copy of 64 KB                & 233 & 2.36 & 225 & 2.27 \\
+lat 4K     & dependent loads, D-cache hit & 41  & 10.3 & 41  & 10.3 \\
+lat 128K   & dependent loads, D-cache miss & 108 & 27.0 & 119 & 29.7 \\
+syscall    & \texttt{getppid}             & 186 & 1.83 & 184 & 1.81 \\
+spawn      & \texttt{vfork} and \texttt{exec} & 108 & 4.33 & 94 & 3.41 \\
+\end{guidetable}
+
 Table~\ref{tab:make} lists the main \texttt{make} targets.
 
 \begin{guidetable}{Make targets}{make}{l p{0.72\linewidth}}
@@ -341,6 +380,8 @@ target & function \\
 \texttt{emu} & Build the emulator. \\
 \texttt{run-emu} & Run the emulator to the title screen and save frames in \texttt{build/frames/}. \\
 \texttt{bench-emu} & Run \texttt{timedemo demo1} in the emulator. \\
+\texttt{coremark-emu} & Run CoreMark in the emulator with the cycle model. \\
+\texttt{coremark-sim} & Run 10 iterations of CoreMark in nvc. \\
 \texttt{rom} & Generate \texttt{rtl/boot\_rom\_data.vhd} from the boot ROM binary. \\
 \texttt{cpu-test} & Run the CPU test program with the CPU connected to an ideal memory. \\
 \texttt{soc-test} & Run a test program on the full design with the chip models. \\
